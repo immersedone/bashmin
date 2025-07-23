@@ -23,8 +23,11 @@ DIRECTORIES=(
     "/var/www/self-healing"
 )
 
+# Detect the real user (not root when using sudo)
+REAL_USER="${SUDO_USER:-$USER}"
+
 # Directory permissions
-VHOSTS_OWNER="www-data:www-data"
+VHOSTS_OWNER="$REAL_USER:www-data"
 VHOSTS_PERMS="755"
 SELF_HEALING_OWNER="root:root"
 SELF_HEALING_PERMS="755"
@@ -33,7 +36,7 @@ SELF_HEALING_PERMS="755"
 print_header() {
     echo
     echo -e "${BLUE}============================================${NC}"
-    echo -e "${BLUE}                 $1${NC}"
+    echo -e "${BLUE}            $1${NC}"
     echo -e "${BLUE}============================================${NC}"
     echo
 }
