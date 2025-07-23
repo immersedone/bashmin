@@ -5,3 +5,12 @@
 # Usage: ./software/install.sh [OPTIONS]
 #
 
+PACKAGES=(
+	"curl"
+	"git"
+	"vim"
+	"htop"
+	"build-essential"
+	"net-tools"
+	"zip"
+)

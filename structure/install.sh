@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# BashMin Structure Installer
+# Creates essential directory structure for web hosting and self-healing services
+# Author: BashMin Team
+# Version: 1.0
+
+# Load helper functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Source helper functions
+source "$PROJECT_ROOT/_helpers/common.sh"
+source "$PROJECT_ROOT/_helpers/system.sh"
+
+# Import colors from common.sh
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+DIRECTORIES=(
+    "/var/www/vhosts"
+    "/var/www/self-healing"
+)
+
+# Directory permissions
+VHOSTS_OWNER="www-data:www-data"
+VHOSTS_PERMS="755"
+SELF_HEALING_OWNER="root:root"
+SELF_HEALING_PERMS="755"
+
+# Function to print header
+print_header() {
+    echo
+    echo -e "${BLUE}============================================${NC}"
+    echo -e "${BLUE}                 $1${NC}"
+    echo -e "${BLUE}============================================${NC}"
+    echo
+}
+
+# Function to create directory with proper ownership and permissions
+create_directory_structure() {
+    local dir_path="$1"
+    local owner="$2"
+    local perms="$3"
+    
+    print_info "Creating directory: $dir_path"
+    
+    if [[ -d "$dir_path" ]]; then
+        print_warning "Directory $dir_path already exists"
+    else
+        if sudo mkdir -p "$dir_path"; then
+            print_success "Created directory: $dir_path"
+        else
+            print_error "Failed to create directory: $dir_path"
+            return 1
+        fi
+    fi
+    
+    # Set ownership
+    if sudo chown "$owner" "$dir_path"; then
+        print_success "Set ownership $owner on $dir_path"
+    else
+        print_warning "Failed to set ownership on $dir_path"
+    fi
+    
+    # Set permissions
+    if sudo chmod "$perms" "$dir_path"; then
+        print_success "Set permissions $perms on $dir_path"
+    else
+        print_warning "Failed to set permissions on $dir_path"
+    fi
+}
+
+# Function to verify directory structure
+verify_structure() {
+    print_info "Verifying directory structure..."
+    
+    local all_good=true
+    
+    for dir in "${DIRECTORIES[@]}"; do
+        if [[ -d "$dir" ]]; then
+            print_success "✓ $dir exists"
+        else
+            print_error "✗ $dir missing"
+            all_good=false
+        fi
+    done
+    
+    if $all_good; then
+        print_success "All directories are present!"
+        return 0
+    else
+        print_error "Some directories are missing"
+        return 1
+    fi
+}
+
+# Main installation function
+main() {
+    print_header "BashMin Structure Installer"
+    
+    # Check if running as root or with sudo
+    if [[ $EUID -eq 0 ]]; then
+        print_info "Running as root"
+    elif sudo -n true 2>/dev/null; then
+        print_info "Sudo access confirmed"
+    else
+        print_error "This script requires sudo access"
+        exit 1
+    fi
+    
+    # Create vhosts directory
+    create_directory_structure "/var/www/vhosts" "$VHOSTS_OWNER" "$VHOSTS_PERMS"
+    
+    # Create self-healing directory  
+    create_directory_structure "/var/www/self-healing" "$SELF_HEALING_OWNER" "$SELF_HEALING_PERMS"
+    
+    # Verify everything is created properly
+    if verify_structure; then
+        print_success "Directory structure installation completed successfully!"
+        
+        # Show the structure
+        echo
+        print_info "Created structure:"
+        echo "├── /var/www/"
+        echo "    ├── vhosts/     (for virtual hosts)"
+        echo "    └── self-healing/ (for monitoring & automation)"
+        echo
+        
+        return 0
+    else
+        print_error "Directory structure installation failed!"
+        return 1
+    fi
+}
+
+# Run main function if script is executed directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
