@@ -1,0 +1,15 @@
+[Unit]
+Description=FrankenPHP Web Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/frankenphp run --config /etc/frankenphp/Caddyfile
+WorkingDirectory=/var/www
+Restart=on-failure
+User=www-data
+Group=www-data
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecReload=/bin/kill -USR1 \$MAINPID
+
+[Install]
+WantedBy=multi-user.target
