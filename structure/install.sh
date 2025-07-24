@@ -21,6 +21,7 @@ NC='\033[0m' # No Color
 DIRECTORIES=(
     "/var/www/vhosts"
     "/var/www/self-healing"
+    "/var/www/ai"
 )
 
 # Detect the real user (not root when using sudo)
@@ -31,6 +32,8 @@ VHOSTS_OWNER="$REAL_USER:www-data"
 VHOSTS_PERMS="755"
 SELF_HEALING_OWNER="root:root"
 SELF_HEALING_PERMS="755"
+AI_OWNER="$REAL_USER:www-data"
+AI_PERMS="755"
 
 # Function to print header
 print_header() {
@@ -119,6 +122,9 @@ main() {
     # Create self-healing directory  
     create_directory_structure "/var/www/self-healing" "$SELF_HEALING_OWNER" "$SELF_HEALING_PERMS"
     
+    # Create AI directory
+    create_directory_structure "/var/www/ai" "$AI_OWNER" "$AI_PERMS"
+    
     # Verify everything is created properly
     if verify_structure; then
         print_success "Directory structure installation completed successfully!"
@@ -128,7 +134,8 @@ main() {
         print_info "Created structure:"
         echo "├── /var/www/"
         echo "    ├── vhosts/     (for virtual hosts)"
-        echo "    └── self-healing/ (for monitoring & automation)"
+        echo "    ├── self-healing/ (for monitoring & automation)"
+        echo "    └── ai/         (for AI applications)"
         echo
         
         return 0
