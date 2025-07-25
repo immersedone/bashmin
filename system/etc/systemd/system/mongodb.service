@@ -1,0 +1,50 @@
+##########################################################
+#
+#   File: /etc/systemd/system/mongodb.service
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (21/01/2020)
+#   Description:
+#
+#   This is the base service file that handles
+#   execution tasks such as reload/restart/start/stop
+#   for the 'mongodb' service. Has been modified
+#   to allow for auto-healing; meaning will
+#   automatically restart upon any interrupts to
+#   the service. 
+#
+#   ######################################################
+#
+#   Notes: Taken from standard configuration from 
+#   multi-user.target.wants/ folder.
+#   
+#   TO DO: Patch Initializing User
+#
+##
+
+[Unit]
+Description=An object/document-oriented database
+Documentation=man:mongod(1)
+After=network.target
+StartLimitInterval=20
+StartLimitBurst=5
+
+[Service]
+# User=shadower
+Group=shadower
+RuntimeDirectory=mongodb
+RuntimeDirectoryMode=0755
+EnvironmentFile=-/etc/default/mongodb
+Environment=CONF=/etc/mongodb.conf
+Environment=SOCKETPATH=/run/mongodb
+ExecStart=/usr/bin/mongod --unixSocketPrefix=${SOCKETPATH} --config ${CONF} $DAEMON_OPTS
+ExecStop=/bin/bash /usr/share/scripts/notify-service-crash mongodb ;
+LimitFSIZE=infinity
+LimitCPU=infinity
+LimitAS=infinity
+LimitNOFILE=64000
+LimitNPROC=64000
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

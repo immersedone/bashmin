@@ -1,0 +1,46 @@
+##########################################################
+#
+#   File: /etc/systemd/system/fail2ban.service
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (21/01/2020)
+#   Description:
+#
+#   This is the base service file that handles
+#   execution tasks such as reload/restart/start/stop
+#   for the 'fail2ban' service. Has been modified
+#   to allow for auto-healing; meaning will
+#   automatically restart upon any interrupts to
+#   the service. 
+#
+#   ######################################################
+#
+#   Notes: Taken from standard configuration from 
+#   multi-user.target.wants/ folder.
+#
+#
+##
+
+
+[Unit]
+Description=Fail2Ban Service
+Documentation=man:fail2ban(1)
+After=network.target iptables.service firewalld.service ip6tables.service ipset.service
+PartOf=firewalld.service
+StartLimitInterval=20
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /var/run/fail2ban
+ExecStart=/usr/bin/fail2ban-server -xf start
+# if should be logged in systemd journal, use following line or set logtarget to sysout in fail2ban.local
+# ExecStart=/usr/bin/fail2ban-server -xf --logtarget=sysout start
+ExecStop=/bin/bash /usr/share/scripts/notify-service-crash fail2ban ; /usr/bin/fail2ban-client stop
+ExecReload=/usr/bin/fail2ban-client reload
+PIDFile=/var/run/fail2ban/fail2ban.pid
+Restart=always
+RestartSec=3s
+RestartPreventExitStatus=0 255
+
+[Install]
+WantedBy=multi-user.target

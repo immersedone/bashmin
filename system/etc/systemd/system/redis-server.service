@@ -1,0 +1,24 @@
+##########################################################
+#
+#   File: /etc/systemd/system/apache2.service
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (21/01/2020)
+#   Description:
+#
+#   This is the base service file that handles
+#   execution tasks such as reload/restart/start/stop
+#   for the 'apache2' service. Has been modified
+#   to allow for auto-healing; meaning will
+#   automatically restart upon any interrupts to
+#   the service. 
+#
+#   ######################################################
+#
+#   Notes: Taken from standard configuration from 
+#   multi-user.target.wants/ folder.
+#
+#
+##
+
+
+### TO WORK ON ###

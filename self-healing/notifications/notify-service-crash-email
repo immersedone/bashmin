@@ -1,0 +1,149 @@
+#!/bin/bash
+
+##########################################################
+#
+#   File: /usr/share/scripts
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (04/02/2020)
+#   Description:
+#
+#   This script is used to notify the current Administrator
+#   for the server that a service has crashed and is about
+#   to be killed. The script will wait the standard 3-seconds
+#   that is applied to each of the service scripts (systemd)
+#   to check and see if the service has been restarted. 
+#   If it hasn't been automatically restarted, the server
+#   will then send off the notification email with a 
+#   current status. 
+#
+#
+#   Example usage: notify-service-crash.sh  "SERVICE_NAME"
+#
+##
+
+# ENV: Set the script to exit it any commands fail with an exit-code
+set -e
+
+# DEFINE: Set the system-level variables & arguments
+serviceName="${1}"
+serverHostname="${HOSTNAME}"
+scriptLogFile="/var/log/service-health.log"
+
+# DEFINE: Function for sending out emails via PostFix/Mail
+notifyAdministrator() {
+    local adminEmail=""
+
+    # Begin the email template for the notification email
+    local emailFrom="Server <noreply@${serverHostname}>"
+    local emailTo="Admin <>"
+    local emailSubject="${serviceName} crashed on ${serverHostname}"
+    local emailType="Content-Type: text/html"
+    local emailTemplate="<html>\
+        <head>\
+            <style>\
+                .bodyCopy {\
+                    font-family: 'Open Sans', Arial, sans-serif;\
+                    font-size: 16px;\
+                    line-height: 24px;\
+                    font-weight: 400;\
+                    text-align: left;\
+                }\
+                .serviceWrapperTable .bodyCopy {\
+                    margin-top: 0;\
+                    margin-bottom: 0;\
+                }\
+                .serviceWrapperTable th,\
+                .serviceWrapperTable td {\
+                    border: 1px solid #666666;\
+                }\
+            </style>\
+        </head>\
+        <body bgcolor='#242424;' style='background: #242424; padding-top: 35px; padding-bottom: 35px;'>\
+            <table class='bodyWrapper' width='600' align='center' valign='top' cellspacing='0' cellpadding='0' border='0' bgcolor='#FFFFFF' style='background: #FFFFFF; margin-top:30px; margin-bottom:30px; padding-left:30px; padding-right:30px; padding-top:30px; padding-bottom:30px;'>\
+                <tbody>\
+                    <tr>\
+                        <td width='100%' align='center' valign='top'>\
+                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; text-align: left;'>Dear WiSPER-Hive Admin,</p>\
+                            <br/>\
+                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; text-align: left;'>This is an automated message to inform you that the following services have crashed and an attempt at automatically restarting the service has failed. The details for are as follows:</p>\
+                            <br/>\
+                            <table class='serviceWrapperTable' width='100%' align='center' valign='top' cellpadding='0' cellspacing='0' border='0'>\
+                                <thead>\
+                                    <tr>\
+                                        <th width='50%' align='center' valign='top' bgcolor='#000000' style='background: #000000; color: #FFFFFF; padding: 15px;'>\
+                                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: bold; line-height: 24px; text-align: left; margin-top: 0!important; margin-bottom: 0!important;'>Server Host</p>\
+                                        </th>\
+                                        <th width='50%' align='center' valign='top' bgcolor='#000000' style='background: #000000; color: #FFFFFF; padding: 15px;'>\
+                                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: bold; line-height: 24px; text-align: left; margin-top: 0!important; margin-bottom: 0!important;'>Service Name</p>\
+                                        </th>\
+                                    </tr>\
+                                </thead>\
+                                <tbody>\
+                                    <tr>\
+                                        <td width='50%' align='center' valign='top' style='padding: 15px;'>\
+                                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: bold; line-height: 24px; text-align: left; margin-top: 0!important; margin-bottom: 0!important;'>${serverHostname}</p>\
+                                        </td>\
+                                        <td width='50%' align='center' valign='top' style='padding: 15px;'>\
+                                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: bold; line-height: 24px; text-align: left; margin-top: 0!important; margin-bottom: 0!important;'>${serviceName}</p>\
+                                        </td>\
+                                    </tr>\
+                                </tbody>\
+                            </table>\
+                            <br/>\
+                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; text-align: left;'>Kind regards,</p>\
+                            <p class='bodyCopy' style='font-family: \'Open Sans\', Arial, sans-serif; font-size: 16px; font-weight: 400; line-height: 24px; text-align: left;'>WiSPER-Swarm Bot.</p>\
+                        </td>\
+                    </tr>\
+                </tbody>\
+            </table>\
+        </body>\
+    </html>"
+    
+    echo "${emailTemplate}" | sudo mail -a  "${emailType}" -s "${emailSubject}" -r "${emailFrom}" -- "${adminEmail}"
+
+}
+
+
+# DEFINE: Function to print out messages back into a log-file for consumption
+outputLog() {
+    local currentTimestamp=`date "+%d/%m/%Y - %H:%M:%S"`
+    local messageOutput=$1
+    echo "[ $currentTimestamp ] - $messageOutput"
+}
+
+# DEFINE: Function to check and see if service is still alive
+serviceCheck() {
+    # local currentStatus=`systemctl is-active service $1`
+    local currentStatus=`systemctl show -p ActiveState --value $1`
+    outputLog "Running service health check for ${1}." >> ${scriptLogFile}
+    if [[ ${currentStatus} == 'active' ]]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+
+# LOGIC #1: Check that the service is now online again after 5 secs
+#   - this should allow enough time for the service itself to either be in a 
+#   - loaded or started state.
+#
+sleep 5
+outputLog "Crash has been detected for ${serviceName}.service" >> ${scriptLogFile}
+
+serviceStatus=$( serviceCheck ${serviceName} )
+
+
+# LOGIC #1.1: Service hasn't been restarted
+if [[ ${serviceStatus} = 1 ]]; then
+    outputLog "\`$serviceName.service\` has not automatically been restarted. Notifying administrator." >> ${scriptLogFile}
+    notifyAdministrator
+# LOGIC #1.2: Service has been restarted, no-notify
+else
+    notifyAdministrator
+    outputLog "\`$serviceName.service\` has been automatically restarted. No need to notify." >> ${scriptLogFile}
+fi
+
+
+# EXIT: Return the exit code back to the systemd service file.
+exit 0

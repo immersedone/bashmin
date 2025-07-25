@@ -1,0 +1,43 @@
+##########################################################
+#
+#   File: /etc/systemd/system/php7.4-fpm.service
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (21/01/2020)
+#   Description:
+#
+#   This is the base service file that handles
+#   execution tasks such as reload/restart/start/stop
+#   for the 'php7.4-fpm' service. Has been modified
+#   to allow for auto-healing; meaning will
+#   automatically restart upon any interrupts to
+#   the service. 
+#
+#   ######################################################
+#
+#   Notes: Taken from standard configuration from 
+#   multi-user.target.wants/ folder.
+#
+#
+##
+
+
+[Unit]
+Description=The PHP 7.4 FastCGI Process Manager
+Documentation=man:php-fpm7.4(8)
+After=network.target
+StartLimitInterval=20
+StartLimitBurst=5
+
+[Service]
+Type=notify
+PIDFile=/run/php/php7.4-fpm.pid
+ExecStart=/usr/sbin/php-fpm7.4 --nodaemonize --fpm-config /etc/php/7.4/fpm/php-fpm.conf
+ExecStartPost=-update-alternatives --quiet --install /run/php/php-fpm.sock php-fpm.sock /run/php/php7.4-fpm.sock 74
+ExecStop=/bin/bash /usr/share/scripts/notify-service-crash php7.4-fpm ;
+ExecStopPost=-update-alternatives --quiet --remove php-fpm.sock /run/php/php7.4-fpm.sock
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

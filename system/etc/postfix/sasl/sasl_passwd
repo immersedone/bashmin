@@ -1,0 +1,16 @@
+####
+#
+#    File: /etc/postfix/sasl/sasl_passwd
+#    Author: Truc Minh Phan <immersedone>
+#    Last Modified: Truc Minh Phan (30/01/2020)
+#    Description: 
+#
+#    This file is used to configure Gmail to work
+#    as the SMTP relay for PostFix's mailing system.
+#
+#    PostFix will be configured to use the main admin
+#    email address.
+#
+##
+
+[smtp.gmail.com]:587 ${GMAIL}$:${GMAIL_PASS}

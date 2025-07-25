@@ -19,9 +19,35 @@ NC='\033[0m' # No Color
 
 # Configuration
 DIRECTORIES=(
+    # General Directories
     "/var/www/vhosts"
     "/var/www/self-healing"
     "/var/www/ai"
+
+    # User Directories
+    "/home/${USER}/.bashmin"
+
+    # Shared Directories
+    "/usr/share/bashmin"
+
+    # Logs
+    "/var/log/bashmin/security"
+    "/var/log/bashmin/monitoring"
+    "/var/log/bashmin/automation"
+
+    # TODO: Move these to individual install scripts
+    "/var/log/apache2"
+    "/var/log/clamav"
+    "/var/log/fail2ban"
+    "/var/log/lynis"
+    "/var/log/mongodb"
+    "/var/log/mysql"
+    "/var/log/php"
+    "/var/log/redis"
+    "/var/log/rkhunter"
+    "/var/log/ufw"
+    "/var/log/unattended-upgrades"
+    "/var/log/varnish"
 )
 
 # Detect the real user (not root when using sudo)

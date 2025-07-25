@@ -1,0 +1,16 @@
+/var/log/clamav/freshclam.log {
+     rotate 30
+     daily
+     dateext
+     compress
+     delaycompress
+     missingok
+     create 640  clamav adm
+     postrotate
+     if [ -d /run/systemd/system ]; then
+         systemctl -q is-active clamav-freshclam && systemctl kill --signal=SIGHUP clamav-freshclam || true
+     else
+         invoke-rc.d clamav-freshclam reload-log > /dev/null || true
+     fi
+     endscript
+}

@@ -1,0 +1,42 @@
+##########################################################
+#
+#   File: /etc/systemd/system/clamav-freshclam.service
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (21/01/2020)
+#   Description:
+#
+#   This is the base service file that handles
+#   execution tasks such as reload/restart/start/stop
+#   for the 'clamav-freshclam' service. Has been modified
+#   to allow for auto-healing; meaning will
+#   automatically restart upon any interrupts to
+#   the service. 
+#
+#   ######################################################
+#
+#   Notes: Taken from standard configuration from 
+#   multi-user.target.wants/ folder.
+#
+#
+##
+
+
+[Unit]
+Description=ClamAV virus database updater
+Documentation=man:freshclam(1) man:freshclam.conf(5) https://www.clamav.net/documents
+# If user wants it run from cron, don't start the daemon.
+ConditionPathExists=!/etc/cron.d/clamav-freshclam
+Wants=network-online.target
+After=network-online.target
+StartLimitInterval=20
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/bin/freshclam -d --foreground=true
+ExecStop=/bin/bash /usr/share/scripts/notify-service-crash clamav-freshclam
+StandardOutput=syslog
+Restart=always
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

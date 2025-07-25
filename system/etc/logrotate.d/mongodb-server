@@ -1,0 +1,11 @@
+/var/log/mongodb/*.log {
+       rotate 30
+       dateext
+       dateformat -%Y-%m-%d
+       daily
+       copytruncate
+       delaycompress
+       compress
+       notifempty
+       missingok
+}

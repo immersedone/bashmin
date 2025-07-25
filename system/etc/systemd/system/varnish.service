@@ -1,0 +1,58 @@
+##########################################################
+#
+#   File: /etc/systemd/system/varnish.service
+#   Author: Truc Minh Phan <immersedone>
+#   Last Modified: Truc Minh Phan (21/01/2020)
+#   Description:
+#
+#   This is the base service file that handles
+#   execution tasks such as reload/restart/start/stop
+#   for the 'varnish' service. Has been modified
+#   to allow for auto-healing; meaning will
+#   automatically restart upon any interrupts to
+#   the service. 
+#
+#   ######################################################
+#
+#   Notes: Taken from standard configuration from 
+#   multi-user.target.wants/ folder.
+#
+#
+##
+
+[Unit]
+Description=Varnish HTTP accelerator
+Documentation=https://www.varnish-cache.org/docs/4.1/ man:varnishd
+StartLimitInterval=20
+StartLimitBurst=5
+
+[Service]
+Type=simple
+LimitNOFILE=131072
+LimitMEMLOCK=82000
+ExecStart=/usr/sbin/varnishd -j unix,user=vcache -F \
+                                        -a 127.0.0.1:8090 \
+                                        -a 127.0.0.1:8091 \
+                                        -a 127.0.0.1:8092 \
+                                        -a 127.0.0.1:8093 \
+                                        -a 127.0.0.1:8094 \
+                                        -a 127.0.0.1:8095 \
+                                        -a 127.0.0.1:8096 \
+                                        -a 127.0.0.1:8097 \
+                                        -a 127.0.0.1:8098 \
+                                        -a 127.0.0.1:8099 \
+                                        -T localhost:6082 \
+                                        -f /etc/varnish/default.vcl \
+                                        -S /etc/varnish/secret \
+                                        -s malloc,256m
+ExecReload=/usr/share/varnish/reload-vcl
+ExecStop=/bin/bash /usr/share/scripts/notify-service-crash varnish ;
+Restart=always
+RestartSec=3s
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

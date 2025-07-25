@@ -1,0 +1,13 @@
+/var/log/php8.3-fpm.log {
+        rotate 30
+        dateext
+        dateformat -%Y-%m-%d
+        daily
+        missingok
+        notifempty
+        compress
+        delaycompress
+        postrotate
+                /usr/lib/php/php8.3-fpm-reopenlogs
+        endscript
+}

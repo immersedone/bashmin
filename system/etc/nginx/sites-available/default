@@ -1,0 +1,32 @@
+####
+#    File: /etc/nginx/sites-available/default
+#    Author: Truc Minh Phan <immersedone>
+#    Last Modified: Truc Minh Phan (04/12/2019)
+#    Description:
+#
+#    This file contains the base configuration for the default server block/stub
+#    which houses all of the port listeners as well as methods.
+#
+#    This file has been set to return with a HTTP-500 Server Error with the string
+#    of 'Access is Denied' if the server was attempted to be accessed via HTTP with
+#    an invalid virtual host or domain name.
+#
+##
+
+
+# DEFAULT: Main Server Block HTTP Port 80
+server {
+
+    # Define the Listening Ports
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    # Define the Domain Name/Aliases
+    server_name _;
+
+    # Catch on the Location Directive
+    location / {
+        return 500 "<b>Access is denied.</b>";
+    }
+
+}
