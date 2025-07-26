@@ -1,0 +1,20 @@
+#
+# File: Caddyfile.template
+# Description: Main Caddyfile template for FrankenPHP server
+# 
+
+# Global options
+{
+	frankenphp
+	order php_server before file_server
+	order php before file_server
+}
+
+# Import all virtual hosts
+import vhosts/*
+
+# Default catch-all for development
+:80 {
+	root * /var/www/html
+	php_server
+}
