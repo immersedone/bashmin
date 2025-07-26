@@ -24,6 +24,11 @@ DIRECTORIES=(
     "/var/www/self-healing"
     "/var/www/ai"
 
+    # Backups
+    "/var/www/backups"
+    "/var/www/backups/phpmyadmin"
+    "/var/www/backups/mysql"
+
     # User Directories
     "/home/${USER}/.bashmin"
 
