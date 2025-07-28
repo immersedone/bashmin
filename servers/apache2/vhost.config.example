@@ -1,0 +1,56 @@
+####
+#    File: php8.3-base.conf
+#    Author: Truc Minh Phan <immersedone>
+#    Last Modified: Truc Minh Phan (04/12/2019)
+#    Description:
+#
+#    This file contains base configuiration for a PHP8.3 proxy-passed
+#    VirtualHost that has been SSL-terminated by Varnish HTTP Cache
+#    Server. The listening port is the one specified within Varnish
+#    backend configurations.
+#
+##
+
+
+
+# Listen on Port 8080
+<VirtualHost 127.0.0.1:8080>
+
+    # Define the Server/Domain Name and aliases
+    ServerName php74.ti
+    ServerAlias
+
+    # Additional Server Information
+    ServerAdmin 
+
+    # Define the source directory to serve
+    DocumentRoot /var/www/vhosts/php83-test/public
+
+    # Enable HTTP2 Protocol
+    Protocols h2 h2c http/1.1
+    ProtocolsHonorOrder Off
+
+    # Directory Specific Access Controls
+    <Directory "/var/www/vhosts/php83-test/public">
+
+        # Define Directory Options
+        Options All
+        AllowOverride all
+        Require all granted
+
+        # Check for .PHP Files to Proxy-Pass to Correct PHP Versions
+        <IfModule proxy_fcgi_module>
+            <FilesMatch ".+\.ph(p[3457]?|t|tml)$">
+                SetHandler "proxy:unix:/run/php/php8.3-fpm.sock|fcgi://localhost"
+            </FilesMatch>
+        </IfModule>
+
+    </Directory>
+
+
+
+    # Define Logging Files for VirtualHost: $/{ DOMAIN_NAME }-{LOG_TYPE}.log
+    ErrorLog ${APACHE_LOG_DIR}/php83.ti-error.log
+    CustomLog ${APACHE_LOG_DIR}/php83.ti-access.log combined
+
+</VirtualHost>
