@@ -1,21 +1,36 @@
 #####
 #
-#   File: /etc/nginx/sites-available/php74.ti.conf
-#   Author: immersedone
-#   Version: 1.0
+#   File: proxy.config.example
+#   Author: bashmin project  
+#   Version: 2.0
 #   Description:
 #
-#   This is a basic example of a proxy-passed virtual host
-#   that is used for php8.3-fpm configurations; this should
-#   be considered a support protocol as version 8.3 of PHP
-#   has been released.
+#   This is an advanced proxy configuration template with A/B testing
+#   capabilities using Nginx upstream pools. Supports multiple backend
+#   servers, load balancing, health checks, and traffic splitting.
 #
-#   This file also contains SSL Configurations.
+#   Features:
+#   - A/B testing with configurable traffic split
+#   - Multiple upstream pools (production, staging, canary)
+#   - Health monitoring and failover
+#   - SSL termination with modern security
+#   - Rate limiting and DDoS protection
+#   - Advanced proxy optimizations
 #
-#   Designated Inbound Varnish Port: 8090
+#   Placeholders for script replacement:
+#   - {DOMAIN_NAME}: Domain name (e.g., example.local)
+#   - {UPSTREAM_POOLS}: Generated upstream pool configurations
+#   - {AB_LOGIC}: A/B testing logic block
+#   - {SSL_CERT_PATH}: SSL certificate path
+#   - {SSL_KEY_PATH}: SSL private key path
 #
 ##
 
+# Upstream Pool Configurations
+{UPSTREAM_POOLS}
+
+# A/B Testing Logic
+{AB_LOGIC}
 
 #### --- HTTP: Port 80 Block --- ####
 server {
@@ -24,55 +39,14 @@ server {
     listen 80;
     listen [::]:80;
 
-    # Server Names/Aliases;
-    server_name php74.ti;
+    # Server Names/Aliases
+    server_name {DOMAIN_NAME};
 
     # (Optional): Force Redirect to HTTPS
-    return 301 https://php74.ti$request_uri;
-
-    # Location/Route
-    location / {
-
-        # DDOS Parameters
-        limit_req zone=borderforce burst=300 nodelay;
-
-        # Proxy Versions
-        proxy_http_version 1.1;
-        proxy_buffering off;
-        chunked_transfer_encoding off;
-
-        # Proxy Settings/Configurations
-        proxy_connect_timeout 300;
-        proxy_buffers 4 32k;
-        proxy_send_timeout 100;
-        proxy_read_timeout 100;
-
-        # Proxy Upload Filesizes
-        client_max_body_size 512M;
-        client_body_buffer_size 128M;
-
-        # Security Headers
-        add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload";
-        add_header X-Frame-Options DENY;
-        add_header X-XSS-Protection "1; mode=block";
-        add_header X-Content-Type-Options nosniff;
-
-        # Proxy Headers
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-
-        # Proxy IP / Target
-        proxy_pass http://127.0.0.1:8090;
-
-    }
+    return 301 https://{DOMAIN_NAME}$request_uri;
 
 }
 #### --- END HTTP: Port 80 Block --- ####
-
-
 
 
 #### --- HTTPS: Port 443 Block --- ####
@@ -82,58 +56,140 @@ server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
 
-    # Server Names/Aliases;
-    server_name php83.ti;
+    # Server Names/Aliases
+    server_name {DOMAIN_NAME};
 
-    # SSL Key Details
-    ssl_certificate /etc/letsencrypt/live/php83.ti/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/php83.ti/privkey.pem;
-    ssl_session_timeout 5m;
+    # SSL Configuration
+    ssl_certificate {SSL_CERT_PATH};
+    ssl_certificate_key {SSL_KEY_PATH};
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
 
-    # SSL Protocols/Cipher Details
-    ssl_protocols  TLSv1.1 TLSv1.2; # Drop SSLv3 due to POODLE vulnerability
-    ssl_ciphers 'ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA:ECDHE-ECDSA-DES-CBC3-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:DES-CBC3-SHA:!aNULL:!eNULL:!LOW:!3DES:!MD5:!EXP:!PSK:!SRP:!DSS';
-    ssl_prefer_server_ciphers   on;
+    # Modern SSL Configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE+AESGCM:ECDHE+AES256:ECDHE+AES128:!aNULL:!MD5:!DSS;
+    ssl_prefer_server_ciphers off;
 
+    # HSTS
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
 
-    # Location/Route
+    # Security Headers
+    add_header X-Frame-Options DENY always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Download-Options noopen always;
+    add_header X-Permitted-Cross-Domain-Policies none always;
+
+    # Rate Limiting
+    limit_req zone=borderforce burst=300 nodelay;
+    limit_req_status 429;
+
+    # A/B Testing and Load Balancing
     location / {
-
-        # DDOS Parameters
-        limit_req zone=borderforce burst=300 nodelay;
-
-        # Proxy Versions
+        
+        # Proxy Configuration
         proxy_http_version 1.1;
-        proxy_buffering off;
-        chunked_transfer_encoding off;
-
-        # Proxy Settings/Configurations
-        proxy_connect_timeout 300;
-        proxy_buffers 4 32k;
-        proxy_send_timeout 100;
-        proxy_read_timeout 100;
-
-        # Proxy Upload Filesizes
-        client_max_body_size 512M;
-        client_body_buffer_size 128M;
-
-        # Security Headers
-        add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload";
-        add_header X-Frame-Options DENY;
-        add_header X-XSS-Protection "1; mode=block";
-        add_header X-Content-Type-Options nosniff;
-
+        proxy_buffering on;
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
+        
+        # Timeouts
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+        
+        # Upload Configuration
+        client_max_body_size 100M;
+        client_body_buffer_size 1M;
+        client_body_timeout 60s;
+        
         # Proxy Headers
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-
-
-        # Proxy IP / Target
-        proxy_pass http://127.0.0.1:8090;
-
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        
+        # WebSocket Support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        
+        # A/B Testing Logic Implementation
+        {AB_LOCATION_LOGIC}
+        
+        # Default fallback
+        proxy_pass http://production_pool;
+        
+        # Error handling
+        proxy_next_upstream error timeout invalid_header http_500 http_502 http_503;
+        proxy_next_upstream_tries 3;
+        proxy_next_upstream_timeout 10s;
+        
+        # Add backend information to response headers (for debugging)
+        add_header X-Upstream-Server $upstream_addr always;
+        add_header X-Response-Time $upstream_response_time always;
+        add_header X-Backend-Status $upstream_status always;
     }
+
+    # Health check endpoint
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+
+    # Metrics endpoint (optional)
+    location /nginx_status {
+        stub_status on;
+        access_log off;
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+    }
+
+    # Static files handling (if needed)
+    location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff;
+        
+        # Try local files first, then proxy
+        try_files $uri @proxy_static;
+    }
+    
+    location @proxy_static {
+        proxy_pass http://production_pool;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Security: Block sensitive files
+    location ~* \.(env|log|conf|cfg|bak|backup|old|tmp|swp)$ {
+        deny all;
+        return 404;
+    }
+
+    # Security: Block version control directories
+    location ~ /\.(git|svn|hg|bzr) {
+        deny all;
+        return 404;
+    }
+
+    # Logging
+    access_log /var/log/nginx/{DOMAIN_NAME}-access.log combined;
+    error_log /var/log/nginx/{DOMAIN_NAME}-error.log warn;
 
 }
 #### --- END HTTPS: Port 443 Block --- ####
+
+# WebSocket upgrade handling
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
