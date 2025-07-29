@@ -1,0 +1,17 @@
+/var/log/bashmin/security/nikto/*.log {
+    daily
+    missingok
+    rotate 90
+    compress
+    delaycompress
+    notifempty
+    create 640 root adm
+    sharedscripts
+    postrotate
+        # Clean up old reports
+        find /var/log/bashmin/security/nikto/reports -name '*.html' -mtime +90 -delete 2>/dev/null || true
+        find /var/log/bashmin/security/nikto/reports -name '*.xml' -mtime +90 -delete 2>/dev/null || true
+        find /var/log/bashmin/security/nikto/reports -name '*.csv' -mtime +90 -delete 2>/dev/null || true
+        find /var/log/bashmin/security/nikto/reports -name '*.txt' -mtime +90 -delete 2>/dev/null || true
+    endscript
+}
