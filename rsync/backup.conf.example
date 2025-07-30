@@ -1,0 +1,71 @@
+# Example Rsync Backup Configuration
+# Copy this file and modify for your specific needs
+
+# Source and destination paths
+SOURCE_PATH="/var/www"
+DESTINATION_PATH="/backup/www"
+
+# Remote server configuration (leave empty for local sync)
+REMOTE_HOST="backup.example.com"
+REMOTE_USER="backup-user"
+REMOTE_PORT="22"
+SSH_KEY_PATH="/home/rsync-backup/.ssh/backup_key"
+
+# Sync configuration
+SYNC_MODE="backup"              # backup, sync, mirror, incremental
+SYNC_TYPE="remote"              # local, remote, bidirectional
+
+# Exclude patterns (array format)
+EXCLUDE_PATTERNS=(
+    "*.tmp"
+    "*.log"
+    ".git"
+    "cache/*"
+    "tmp/*"
+    "*.swp"
+    "node_modules"
+)
+
+# Include patterns (optional)
+# INCLUDE_PATTERNS=("*.conf" "*.ini")
+
+# Transfer options
+COMPRESS=true
+BANDWIDTH_LIMIT="1000k"         # Limit to 1MB/s during business hours
+VERIFY_CHECKSUMS=true
+PARALLEL_TRANSFERS=1
+TIMEOUT=3600                    # 1 hour timeout
+RETRY_COUNT=3
+RETRY_DELAY=30
+
+# Backup features
+INCREMENTAL_BACKUP=true
+SNAPSHOT_DIR="/backup/snapshots"
+MAX_SNAPSHOTS=7                 # Keep 7 snapshots
+BACKUP_SUFFIX=".bak"
+
+# Preservation options
+PRESERVE_PERMISSIONS=true
+PRESERVE_OWNERSHIP=true
+PRESERVE_TIMESTAMPS=true
+PRESERVE_LINKS=true
+
+# Notifications
+EMAIL_NOTIFICATIONS=true
+NOTIFICATION_EMAIL="admin@company.com"
+# SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+
+# Scripts (optional)
+# PRE_SYNC_SCRIPT="/scripts/pre-backup.sh"
+# POST_SYNC_SCRIPT="/scripts/post-backup.sh"
+
+# Logging
+LOG_LEVEL="INFO"
+VERBOSE=false
+QUIET=false
+PROGRESS=true
+STATS=true
+
+# Safety options
+DRY_RUN=false                   # Set to true for testing
+FORCE=false
