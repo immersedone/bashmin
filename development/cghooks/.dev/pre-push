@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# This script is intended to be used as a pre-push hook for a Git repository.
+# It runs PHPStan and Pest tests to ensure code quality before pushing.
+
+echo -e '\n\n\033[0;36mcghooks - Pre-Push: \033[0m \n'
+echo -e '\n\033[0;35mRunning PHPStan: \033[0m\n'
+vendor/bin/phpstan --error-format=github
+echo -e '\n\033[0;35mRunning Architecture Tests: \033[0m\n'
+vendor/bin/pest --testsuite Architecture --colors -c phpunit.xml
+echo -e '\n'

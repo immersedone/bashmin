@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# This script is intended to be used as a pre-commit hook for a Git repository.
+# It runs Pint (PHP CS Fixer) and ESLint to ensure code quality before committing.
+
+echo -e '\n\n\033[0;36mcghooks - Pre-Commit: \033[0m \n'
+echo -e "Committing as: \033[0;32m$(git config user.name) ($(git config user.email)) \033[0m\n"
+echo -e '\n\033[0;35mRunning Pint (PHP CS Fixer): \033[0m\n'
+vendor/bin/pint
+echo -e '\n\033[0;35mRunning ESLint: \033[0m\n'
+echo '    - pnpm run lint:fix'
+echo -e '\n'

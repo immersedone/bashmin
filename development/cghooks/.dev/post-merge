@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Get: Changed Files from the last commit
+changedFiles="$(git diff-tree -r --name-only --no-commit-id ORIG_HEAD HEAD)"
+
+# Function: Check if a file has been changed
+changed() {
+	echo "$changedFiles" | grep --quiet "$1" && eval "$2"
+}
+
+# Output: Post-Merge Title
+printf "\n\n\033[0;36mcghooks - Post-Merge: \033[0m \n"
+
+
+# [UC]: Check if Back-End package dependencies have been changed
+if changed 'composer.json' || changed 'composer.lock'; then
+    # Output:
+    printf "\n\033[0;35mInstalling Composer Packages: \033[0m\n"
+
+    composer install
+else
+    printf "\n\033[0;35mComposer Packages: \033[0m\n"
+    printf "Back-End packages are up to date.\n\n"
+fi
+
+# [UC]: Check if Front-End package dependencies have been changed
+if changed 'package.json' || changed 'pnpm-lock.yaml'; then
+    # Output:
+    printf "\n\033[0;35mInstalling PNPM Packages: \033[0m\n"
+
+    pnpm install
+else
+    printf "\n\033[0;35mFront-End Packages: \033[0m\n"
+    printf "Front-End packages are up to date."
+fi
+
+# [UC]: Check if any database migrations have been changed
+if echo "$changedFiles" | grep -q "database/migrations/"; then
+    # Output:
+    printf "\n\033[0;35mRunning Database Migrations: \033[0m\n"
+
+    php artisan migrate
+else
+    printf "\n\033[0;35mDatabase Migrations: \033[0m\n"
+    printf "No new migrations to run.\n"
+fi
