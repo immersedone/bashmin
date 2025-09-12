@@ -30,6 +30,7 @@ OPTIONS:
     --user          Install NVM for current user only (default if no scope specified)
     --system        Install NVM system-wide for all users
     --version=VER   Specify NVM version to install (default: $NVM_DEFAULT_VERSION)
+    --no-node       Skip Node.js installation (only install NVM)
     --verbose       Enable verbose output
     --dry-run       Show what would be done without executing
     -h, --help      Show this help message
@@ -48,6 +49,7 @@ INSTALL_SCOPE=""
 NVM_VERSION=""
 VERBOSE=false
 DRY_RUN=false
+INSTALL_NODE=true  # Install Node.js versions by default
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -61,6 +63,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --version=*)
             NVM_VERSION="${1#*=}"
+            shift
+            ;;
+        --no-node)
+            INSTALL_NODE=false
             shift
             ;;
         --verbose)
@@ -176,6 +182,14 @@ install_nvm_user() {
         export NVM_DIR="$nvm_dir"
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
         [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+        
+        # Ensure NVM is available in parent shell if possible
+        if [[ -n "$BASH_VERSION" ]] && [[ -f "${HOME}/.bashrc" ]]; then
+            print_info "Ensuring NVM is configured in ~/.bashrc..."
+            if ! grep -q "NVM_DIR" "${HOME}/.bashrc"; then
+                print_warning "NVM configuration not found in ~/.bashrc, may need manual setup"
+            fi
+        fi
     fi
     
     print_success "NVM installed to: $nvm_dir"
@@ -248,11 +262,21 @@ export NVM_DIR=\"$nvm_dir\"
 # Function to verify NVM installation
 verify_installation() {
     local nvm_dir
+    local shell_rc_file
     
     if [[ "$INSTALL_SCOPE" == "user" ]]; then
         nvm_dir="${HOME}/.nvm"
     else
         nvm_dir="$NVM_SYSTEM_DIR"
+    fi
+    
+    # Determine the shell configuration file
+    if [[ -n "$BASH_VERSION" ]]; then
+        shell_rc_file="${HOME}/.bashrc"
+    elif [[ -n "$ZSH_VERSION" ]]; then
+        shell_rc_file="${HOME}/.zshrc"
+    else
+        shell_rc_file="${HOME}/.bashrc"  # Default to bashrc
     fi
     
     print_info "Verifying NVM installation..."
@@ -268,6 +292,19 @@ verify_installation() {
             
             if [[ -n "$nvm_version_output" ]]; then
                 print_success "NVM installation verified. Version: $nvm_version_output"
+                
+                # Reload shell configuration for immediate use
+                if [[ -f "$shell_rc_file" ]]; then
+                    print_info "Reloading shell configuration from $shell_rc_file..."
+                    source "$shell_rc_file" 2>/dev/null || true
+                fi
+                
+                # Verify NVM is now available as a function
+                if type nvm &>/dev/null; then
+                    print_success "NVM is now available in current shell"
+                else
+                    print_info "NVM function loaded but may require a new shell session"
+                fi
             else
                 print_warning "NVM installed but version check failed. You may need to restart your shell."
             fi
@@ -288,33 +325,51 @@ show_post_install_instructions() {
     
     if [[ "$INSTALL_SCOPE" == "user" ]]; then
         cat << EOF
-To start using NVM immediately, run:
+IMPORTANT: NVM is a shell function, not a binary program.
+This means 'which nvm' will not find it - use 'type nvm' instead.
+
+To start using NVM immediately in this session, run:
   source ~/.bashrc
 
-Or restart your terminal session.
+Or simply open a new terminal window/tab.
+
+Verify NVM is loaded:
+  type nvm                  # Should show "nvm is a function"
+  nvm --version             # Should display version number
 
 Basic NVM usage:
   nvm install node          # Install latest Node.js
+  nvm install --lts         # Install latest LTS version
   nvm install 18            # Install Node.js v18
   nvm use 18                # Switch to Node.js v18
   nvm list                  # List installed versions
   nvm list-remote           # List available versions
+  nvm alias default 18      # Set default Node.js version
 
 NVM is installed at: ${HOME}/.nvm
 EOF
     else
         cat << EOF
-To start using NVM immediately, run:
+IMPORTANT: NVM is a shell function, not a binary program.
+This means 'which nvm' will not find it - use 'type nvm' instead.
+
+To start using NVM immediately in this session, run:
   source /etc/profile.d/nvm.sh
 
-Or restart your terminal session.
+Or simply open a new terminal window/tab.
+
+Verify NVM is loaded:
+  type nvm                  # Should show "nvm is a function"
+  nvm --version             # Should display version number
 
 Basic NVM usage:
   nvm install node          # Install latest Node.js
+  nvm install --lts         # Install latest LTS version
   nvm install 18            # Install Node.js v18
   nvm use 18                # Switch to Node.js v18
   nvm list                  # List installed versions
   nvm list-remote           # List available versions
+  nvm alias default 18      # Set default Node.js version
 
 NVM is installed system-wide at: $NVM_SYSTEM_DIR
 All users will have access to NVM after their next login.
@@ -323,6 +378,142 @@ EOF
     
     echo
     print_success "NVM installation completed successfully! 🚀"
+    
+    # Try to make NVM available immediately
+    if [[ "$DRY_RUN" == false ]]; then
+        echo
+        print_info "Attempting to make NVM available in current shell..."
+        if [[ "$INSTALL_SCOPE" == "user" ]]; then
+            export NVM_DIR="${HOME}/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+        else
+            source /etc/profile.d/nvm.sh 2>/dev/null || true
+        fi
+        
+        if type nvm &>/dev/null; then
+            print_success "✓ NVM is now available in this shell session!"
+            print_info "You can start using 'nvm' commands immediately."
+        else
+            print_info "NVM will be available after running: source ~/.bashrc"
+        fi
+    fi
+}
+
+# Function to install latest Node.js versions
+install_node_versions() {
+    print_info "=== Setting up Node.js versions ==="
+    
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would install latest 3 Node.js versions and set up aliases"
+        return 0
+    fi
+    
+    # Ensure NVM is loaded
+    if [[ "$INSTALL_SCOPE" == "user" ]]; then
+        export NVM_DIR="${HOME}/.nvm"
+    else
+        export NVM_DIR="$NVM_SYSTEM_DIR"
+    fi
+    
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    
+    if ! type nvm &>/dev/null; then
+        print_warning "NVM not available in current shell, skipping Node.js installation"
+        print_info "You can manually install Node.js versions later with: nvm install node"
+        return 0
+    fi
+    
+    print_info "Fetching available Node.js versions..."
+    
+    # Get the latest 3 stable versions (excluding pre-releases and old versions)
+    local versions_to_install=()
+    local latest_version=""
+    
+    # Get latest stable version numbers (major versions only)
+    local available_versions=$(nvm ls-remote --no-colors | grep -E "v[0-9]+\.[0-9]+\.[0-9]+$" | tail -50 | tac)
+    
+    # Extract unique major versions and get latest patch for each
+    local major_versions=()
+    local count=0
+    
+    while IFS= read -r version; do
+        version=$(echo "$version" | tr -d ' ' | sed 's/->.*//g')
+        major=$(echo "$version" | sed 's/v\([0-9]*\)\..*/\1/')
+        
+        # Check if we already have this major version
+        local already_have=false
+        for mv in "${major_versions[@]}"; do
+            if [[ "$mv" == "$major" ]]; then
+                already_have=true
+                break
+            fi
+        done
+        
+        if [[ "$already_have" == false ]]; then
+            major_versions+=("$major")
+            versions_to_install+=("$version")
+            
+            # First version is the latest
+            if [[ -z "$latest_version" ]]; then
+                latest_version="$version"
+            fi
+            
+            count=$((count + 1))
+            if [[ $count -ge 3 ]]; then
+                break
+            fi
+        fi
+    done <<< "$available_versions"
+    
+    if [[ ${#versions_to_install[@]} -eq 0 ]]; then
+        print_warning "Could not determine Node.js versions to install"
+        return 0
+    fi
+    
+    print_info "Will install the following Node.js versions:"
+    for v in "${versions_to_install[@]}"; do
+        echo "  - $v"
+    done
+    echo
+    
+    # Install each version
+    for version in "${versions_to_install[@]}"; do
+        print_info "Installing Node.js $version..."
+        if nvm install "$version" &>/dev/null; then
+            print_success "✓ Node.js $version installed"
+        else
+            print_warning "Failed to install Node.js $version"
+        fi
+    done
+    
+    # Set up aliases
+    if [[ -n "$latest_version" ]]; then
+        print_info "Setting up aliases..."
+        
+        # Create 'latest' alias
+        if nvm alias latest "$latest_version" &>/dev/null; then
+            print_success "✓ Created alias 'latest' -> $latest_version"
+        fi
+        
+        # Set as default
+        if nvm alias default "$latest_version" &>/dev/null; then
+            print_success "✓ Set $latest_version as default"
+        fi
+        
+        # Use the latest version now
+        if nvm use "$latest_version" &>/dev/null; then
+            print_success "✓ Now using Node.js $latest_version"
+        fi
+        
+        echo
+        print_info "Node.js setup complete!"
+        echo "  Current version: $(node --version 2>/dev/null || echo 'unknown')"
+        echo "  NPM version: $(npm --version 2>/dev/null || echo 'unknown')"
+        echo
+        print_info "Installed versions:"
+        nvm list 2>/dev/null | head -10 || echo "  Run 'nvm list' to see installed versions"
+    fi
 }
 
 # Main installation function
@@ -383,6 +574,19 @@ main() {
     
     # Show post-installation instructions
     show_post_install_instructions
+    
+    # Install Node.js versions if requested
+    if [[ "$INSTALL_NODE" == true ]] && [[ "$DRY_RUN" == false ]]; then
+        echo
+        if confirm_action "Would you like to install the latest 3 Node.js versions?" "Y"; then
+            install_node_versions
+        else
+            print_info "Skipping Node.js installation. You can install it later with: nvm install node"
+        fi
+    elif [[ "$DRY_RUN" == true ]] && [[ "$INSTALL_NODE" == true ]]; then
+        echo
+        echo "[DRY-RUN] Would prompt to install latest 3 Node.js versions"
+    fi
 }
 
 # Run main function
