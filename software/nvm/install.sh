@@ -27,19 +27,29 @@ Usage: $0 [OPTIONS]
 Install Node Version Manager (NVM) with user or system-wide scope.
 
 OPTIONS:
-    --user          Install NVM for current user only (default if no scope specified)
-    --system        Install NVM system-wide for all users
-    --version=VER   Specify NVM version to install (default: $NVM_DEFAULT_VERSION)
-    --no-node       Skip Node.js installation (only install NVM)
-    --verbose       Enable verbose output
-    --dry-run       Show what would be done without executing
-    -h, --help      Show this help message
+    --user                  Install NVM for current user only (default if no scope specified)
+    --system                Install NVM system-wide for all users
+    --version=VER           Specify NVM version to install (default: $NVM_DEFAULT_VERSION)
+    --no-node               Skip Node.js installation (only install NVM)
+    --no-global-packages    Skip global package installation (pnpm, puppeteer, claude-code)
+    --verbose               Enable verbose output
+    --dry-run               Show what would be done without executing
+    -h, --help              Show this help message
 
 EXAMPLES:
-    $0                              # Interactive prompt for scope
-    $0 --user                       # Install for current user
-    $0 --system                     # Install system-wide
-    $0 --user --version=v0.39.0     # Install specific version for user
+    $0                                      # Install NVM + Node.js + global packages
+    $0 --user                               # Install for current user
+    $0 --system                             # Install system-wide
+    $0 --user --version=v0.39.0             # Install specific version for user
+    $0 --no-node                            # Install only NVM (no Node.js versions)
+    $0 --no-global-packages                 # Install NVM + Node.js (no global packages)
+    $0 --no-node --no-global-packages       # Install only NVM
+
+DEFAULT BEHAVIOR:
+    - Installs NVM (Node Version Manager)
+    - Installs latest 3 Node.js versions (one per major version)
+    - Sets up 'latest' alias and default version
+    - Installs global packages: pnpm, puppeteer, @anthropic-ai/claude-code
 
 EOF
 }
@@ -50,6 +60,7 @@ NVM_VERSION=""
 VERBOSE=false
 DRY_RUN=false
 INSTALL_NODE=true  # Install Node.js versions by default
+INSTALL_GLOBAL_PACKAGES=true  # Install global packages by default
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -67,6 +78,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-node)
             INSTALL_NODE=false
+            shift
+            ;;
+        --no-global-packages)
+            INSTALL_GLOBAL_PACKAGES=false
             shift
             ;;
         --verbose)
@@ -431,7 +446,10 @@ install_node_versions() {
     local latest_version=""
     
     # Get latest stable version numbers (major versions only)
-    local available_versions=$(nvm ls-remote --no-colors | grep -E "v[0-9]+\.[0-9]+\.[0-9]+$" | tail -50 | tac)
+    # Temporarily disable strict mode to avoid NVM unbound variable issues
+    set +u
+    local available_versions=$(nvm ls-remote --no-colors 2>/dev/null | grep -E "v[0-9]+\.[0-9]+\.[0-9]+$" | tail -50 | tac)
+    set -u
     
     # Extract unique major versions and get latest patch for each
     local major_versions=()
@@ -480,16 +498,20 @@ install_node_versions() {
     # Install each version
     for version in "${versions_to_install[@]}"; do
         print_info "Installing Node.js $version..."
+        set +u  # Disable strict mode for NVM commands
         if nvm install "$version" &>/dev/null; then
             print_success "✓ Node.js $version installed"
         else
             print_warning "Failed to install Node.js $version"
         fi
+        set -u  # Re-enable strict mode
     done
     
     # Set up aliases
     if [[ -n "$latest_version" ]]; then
         print_info "Setting up aliases..."
+        
+        set +u  # Disable strict mode for NVM commands
         
         # Create 'latest' alias
         if nvm alias latest "$latest_version" &>/dev/null; then
@@ -506,13 +528,66 @@ install_node_versions() {
             print_success "✓ Now using Node.js $latest_version"
         fi
         
+        set -u  # Re-enable strict mode
+        
         echo
         print_info "Node.js setup complete!"
         echo "  Current version: $(node --version 2>/dev/null || echo 'unknown')"
         echo "  NPM version: $(npm --version 2>/dev/null || echo 'unknown')"
         echo
         print_info "Installed versions:"
+        set +u
         nvm list 2>/dev/null | head -10 || echo "  Run 'nvm list' to see installed versions"
+        set -u
+    fi
+}
+
+# Function to install global packages
+install_global_packages() {
+    print_info "=== Installing Global Packages ==="
+    
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would install global packages using ./software/nvm/global-packages.sh"
+        return 0
+    fi
+    
+    # Check if the global packages script exists
+    local global_packages_script="${SCRIPT_DIR}/software/nvm/global-packages.sh"
+    
+    if [[ ! -f "$global_packages_script" ]]; then
+        print_warning "Global packages script not found at: $global_packages_script"
+        print_info "Skipping global package installation"
+        return 0
+    fi
+    
+    # Make sure the script is executable
+    chmod +x "$global_packages_script"
+    
+    print_info "Running global packages installer..."
+    echo
+    
+    # Run the global packages script with appropriate flags
+    local global_flags=""
+    if [[ "$VERBOSE" == true ]]; then
+        global_flags="--verbose"
+    fi
+    
+    # Ensure NVM is loaded for the global packages script
+    if [[ "$INSTALL_SCOPE" == "user" ]]; then
+        export NVM_DIR="${HOME}/.nvm"
+    else
+        export NVM_DIR="$NVM_SYSTEM_DIR"
+    fi
+    
+    # Source NVM to ensure it's available
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    
+    # Run the global packages script automatically (non-interactive)
+    if "$global_packages_script" $global_flags <<< "y"; then
+        print_success "Global packages installed successfully"
+    else
+        print_warning "Some global packages may have failed to install"
+        print_info "You can manually install them later using: $global_packages_script"
     fi
 }
 
@@ -580,12 +655,25 @@ main() {
         echo
         if confirm_action "Would you like to install the latest 3 Node.js versions?" "Y"; then
             install_node_versions
+            
+            # Install global packages after Node.js is installed
+            if [[ "$INSTALL_GLOBAL_PACKAGES" == true ]]; then
+                echo
+                if confirm_action "Would you like to install essential global packages (pnpm, puppeteer, claude-code)?" "Y"; then
+                    install_global_packages
+                else
+                    print_info "Skipping global packages. You can install them later with: ./software/nvm/global-packages.sh"
+                fi
+            fi
         else
             print_info "Skipping Node.js installation. You can install it later with: nvm install node"
         fi
     elif [[ "$DRY_RUN" == true ]] && [[ "$INSTALL_NODE" == true ]]; then
         echo
         echo "[DRY-RUN] Would prompt to install latest 3 Node.js versions"
+        if [[ "$INSTALL_GLOBAL_PACKAGES" == true ]]; then
+            echo "[DRY-RUN] Would prompt to install global packages"
+        fi
     fi
 }
 
