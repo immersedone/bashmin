@@ -68,7 +68,8 @@ EXAMPLES:
 
 NOTES:
     - Requires Node.js and npm to be installed (via NVM)
-    - pnpm is installed first with npm, then used for other packages
+    - pnpm is installed first with npm, then 'pnpm setup' configures shell
+    - pnpm is then used for installing other packages (faster, better dependency management)
     - Global packages are installed for the current Node.js version
     - Use 'nvm use <version>' to switch Node.js versions before running
 
@@ -225,6 +226,8 @@ install_pnpm_first() {
     
     if [[ "$DRY_RUN" == true ]]; then
         echo "[DRY-RUN] Would install: pnpm (using npm install -g pnpm)"
+        echo "[DRY-RUN] Would run: pnpm setup"
+        echo "[DRY-RUN] Would reload shell configuration"
         return 0
     fi
     
@@ -235,6 +238,36 @@ install_pnpm_first() {
         if command -v pnpm &>/dev/null; then
             local pnpm_version=$(pnpm --version)
             print_success "pnpm version $pnpm_version is now available"
+            
+            # Run pnpm setup to configure shell integration
+            print_info "Configuring pnpm shell integration..."
+            if pnpm setup &>/dev/null; then
+                print_success "✓ pnpm setup completed"
+                
+                # Source shell configuration to make pnpm available immediately
+                local shell_rc_file
+                if [[ -n "$BASH_VERSION" ]]; then
+                    shell_rc_file="${HOME}/.bashrc"
+                elif [[ -n "$ZSH_VERSION" ]]; then
+                    shell_rc_file="${HOME}/.zshrc"
+                else
+                    shell_rc_file="${HOME}/.bashrc"  # Default to bashrc
+                fi
+                
+                if [[ -f "$shell_rc_file" ]]; then
+                    print_info "Reloading shell configuration for pnpm..."
+                    source "$shell_rc_file" 2>/dev/null || true
+                fi
+                
+                # Verify pnpm is properly set up
+                if command -v pnpm &>/dev/null; then
+                    print_success "✓ pnpm is ready for use"
+                else
+                    print_info "pnpm setup complete. May need to restart shell for full integration"
+                fi
+            else
+                print_warning "pnpm setup failed, but pnpm is still usable"
+            fi
         else
             print_warning "pnpm installed but not found in PATH"
         fi
