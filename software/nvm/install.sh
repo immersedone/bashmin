@@ -19,6 +19,30 @@ readonly NVM_DEFAULT_VERSION="v0.40.1"
 readonly NVM_INSTALL_URL="https://raw.githubusercontent.com/nvm-sh/nvm"
 readonly NVM_SYSTEM_DIR="/usr/local/nvm"
 
+# Function to show help
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Install Node Version Manager (NVM) with user or system-wide scope.
+
+OPTIONS:
+    --user          Install NVM for current user only (default if no scope specified)
+    --system        Install NVM system-wide for all users
+    --version=VER   Specify NVM version to install (default: $NVM_DEFAULT_VERSION)
+    --verbose       Enable verbose output
+    --dry-run       Show what would be done without executing
+    -h, --help      Show this help message
+
+EXAMPLES:
+    $0                              # Interactive prompt for scope
+    $0 --user                       # Install for current user
+    $0 --system                     # Install system-wide
+    $0 --user --version=v0.39.0     # Install specific version for user
+
+EOF
+}
+
 # Parse command line arguments
 INSTALL_SCOPE=""
 NVM_VERSION=""
@@ -58,30 +82,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Function to show help
-show_help() {
-    cat << EOF
-Usage: $0 [OPTIONS]
-
-Install Node Version Manager (NVM) with user or system-wide scope.
-
-OPTIONS:
-    --user          Install NVM for current user only (default if no scope specified)
-    --system        Install NVM system-wide for all users
-    --version=VER   Specify NVM version to install (default: $NVM_DEFAULT_VERSION)
-    --verbose       Enable verbose output
-    --dry-run       Show what would be done without executing
-    -h, --help      Show this help message
-
-EXAMPLES:
-    $0                              # Interactive prompt for scope
-    $0 --user                       # Install for current user
-    $0 --system                     # Install system-wide
-    $0 --user --version=v0.39.0     # Install specific version for user
-
-EOF
-}
 
 # Function to detect existing NVM installation
 detect_existing_nvm() {
@@ -134,8 +134,8 @@ prompt_for_scope() {
     esac
 }
 
-# Function to install prerequisites
-install_prerequisites() {
+# Function to install NVM prerequisites
+install_nvm_prerequisites() {
     print_info "Installing prerequisites for NVM..."
     install_prerequisites "curl git"
 }
@@ -147,8 +147,29 @@ install_nvm_user() {
     
     print_info "Installing NVM $NVM_VERSION for current user..."
     
-    # Download and run the official NVM install script
-    execute_command "curl -o- '$install_script_url' | bash" "Downloading and installing NVM"
+    # Download the install script first for verification
+    execute_command "curl -fsSL -o /tmp/nvm-install.sh '$install_script_url'" "Downloading NVM install script"
+    
+    # Verify the script is not empty and contains expected content
+    if [[ "$DRY_RUN" == false ]]; then
+        if [[ ! -s /tmp/nvm-install.sh ]]; then
+            print_error "Downloaded script is empty"
+            return 1
+        fi
+        
+        # Basic validation - check for NVM signature in the script
+        if ! grep -q "nvm_install_dir" /tmp/nvm-install.sh; then
+            print_error "Downloaded script doesn't appear to be valid NVM installer"
+            rm -f /tmp/nvm-install.sh
+            return 1
+        fi
+    fi
+    
+    # Run the install script
+    execute_command "bash /tmp/nvm-install.sh" "Installing NVM"
+    
+    # Clean up
+    execute_command "rm -f /tmp/nvm-install.sh" "Cleaning up temporary files"
     
     # Source NVM for immediate use
     if [[ "$DRY_RUN" == false ]]; then
@@ -171,7 +192,22 @@ install_nvm_system() {
     execute_command "sudo mkdir -p '$nvm_dir'" "Creating system NVM directory"
     
     # Download NVM installation script
-    execute_command "curl -o- '$install_script_url' > /tmp/nvm-install.sh" "Downloading NVM install script"
+    execute_command "curl -fsSL -o /tmp/nvm-install.sh '$install_script_url'" "Downloading NVM install script"
+    
+    # Verify the script is not empty and contains expected content
+    if [[ "$DRY_RUN" == false ]]; then
+        if [[ ! -s /tmp/nvm-install.sh ]]; then
+            print_error "Downloaded script is empty"
+            return 1
+        fi
+        
+        # Basic validation - check for NVM signature in the script
+        if ! grep -q "nvm_install_dir" /tmp/nvm-install.sh; then
+            print_error "Downloaded script doesn't appear to be valid NVM installer"
+            rm -f /tmp/nvm-install.sh
+            return 1
+        fi
+    fi
     
     # Set environment for system installation and run
     execute_command "sudo env NVM_DIR='$nvm_dir' bash /tmp/nvm-install.sh" "Installing NVM system-wide"
@@ -319,7 +355,7 @@ main() {
     
     # Install prerequisites
     update_system
-    install_prerequisites
+    install_nvm_prerequisites
     
     # Install NVM based on scope
     case "$INSTALL_SCOPE" in
