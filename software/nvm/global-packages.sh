@@ -355,9 +355,9 @@ install_packages() {
     
     for package in "${PACKAGES_TO_INSTALL[@]}"; do
         if install_package "$package" "$installer"; then
-            ((success_count++))
+            success_count=$((success_count + 1))
         else
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     done
     
