@@ -227,6 +227,7 @@ install_pnpm_first() {
     if [[ "$DRY_RUN" == true ]]; then
         echo "[DRY-RUN] Would install: pnpm (using npm install -g pnpm)"
         echo "[DRY-RUN] Would run: pnpm setup"
+        echo "[DRY-RUN] Would set: pnpm config set global-bin-dir \$PNPM_HOME"
         echo "[DRY-RUN] Would reload shell configuration"
         return 0
     fi
@@ -243,6 +244,16 @@ install_pnpm_first() {
             print_info "Configuring pnpm shell integration..."
             if pnpm setup &>/dev/null; then
                 print_success "✓ pnpm setup completed"
+                
+                # Explicitly set global-bin-dir to ensure proper configuration
+                print_info "Configuring pnpm global bin directory..."
+                local pnpm_home_var="${PNPM_HOME:-${HOME}/.local/share/pnpm}"
+                
+                if pnpm config set global-bin-dir "$pnpm_home_var" &>/dev/null; then
+                    print_success "✓ pnpm global-bin-dir configured: $pnpm_home_var"
+                else
+                    print_warning "Could not set global-bin-dir, using default location"
+                fi
                 
                 # Source shell configuration to make pnpm available immediately
                 local shell_rc_file
@@ -262,6 +273,14 @@ install_pnpm_first() {
                 # Verify pnpm is properly set up
                 if command -v pnpm &>/dev/null; then
                     print_success "✓ pnpm is ready for use"
+                    
+                    # Verify global bin directory is properly configured
+                    local global_bin_dir=$(pnpm config get global-bin-dir 2>/dev/null || echo "")
+                    if [[ -n "$global_bin_dir" && "$global_bin_dir" != "undefined" ]]; then
+                        print_success "✓ pnpm global bin directory: $global_bin_dir"
+                    else
+                        print_warning "pnpm global bin directory may need manual configuration"
+                    fi
                 else
                     print_info "pnpm setup complete. May need to restart shell for full integration"
                 fi

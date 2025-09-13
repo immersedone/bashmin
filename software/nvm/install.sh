@@ -441,17 +441,19 @@ install_node_versions() {
     
     print_info "Fetching available Node.js versions..."
     
-    # Get the latest 3 stable versions (excluding pre-releases and old versions)
+    # Get the latest patch version for the latest 3 major versions
     local versions_to_install=()
     local latest_version=""
     
-    # Get latest stable version numbers (major versions only)
+    # Get latest stable version numbers
     # Temporarily disable strict mode to avoid NVM unbound variable issues
     set +u
-    local available_versions=$(nvm ls-remote --no-colors 2>/dev/null | grep -E "v[0-9]+\.[0-9]+\.[0-9]+$" | tail -50 | tac)
+    # Get ALL versions, including those with LTS markers (*), then clean and sort properly
+    # This ensures we get the actual latest patch versions for each major version
+    local available_versions=$(nvm ls-remote --no-colors 2>/dev/null | grep -E "v[0-9]+\.[0-9]+\.[0-9]+" | sed 's/\s*\*.*$//' | sed 's/^\s*//' | tail -100 | tac)
     set -u
     
-    # Extract unique major versions and get latest patch for each
+    # Extract the latest patch version for each unique major version
     local major_versions=()
     local count=0
     
