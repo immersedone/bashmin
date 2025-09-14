@@ -35,13 +35,69 @@ ENABLE_HTTP2=true
 ENABLE_COMPRESSION=true
 ENABLE_CACHING=true
 ENABLE_SECURITY=true
-ENABLE_MODSECURITY=true
+ENABLE_MODSECURITY=false
 ENABLE_RATE_LIMITING=true
 PHP_VERSION="8.3"
+NGINX_USER="www-data"
 FORCE_INSTALL=false
 VERBOSE=false
 DRY_RUN=false
 QUIET=false
+
+# Function to show help
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Install and configure Nginx web server with bashmin integration.
+
+OPTIONS:
+    --mode MODE             Installation mode: minimal, standard, full (default: $INSTALL_MODE)
+    --php-version VERSION   PHP version to configure (default: $PHP_VERSION)
+    --user USER             Nginx worker process user: www-data or shadower (default: $NGINX_USER)
+    --no-ssl                Skip SSL module installation
+    --no-http2              Skip HTTP/2 module installation
+    --no-compression        Skip compression modules
+    --no-caching            Skip caching modules
+    --no-security           Skip security enhancements
+    --no-modsecurity        Skip ModSecurity installation
+    --no-rate-limiting      Skip rate limiting configuration
+    --force                 Force reinstallation even if already installed
+    --quiet                 Suppress non-essential output
+    --verbose               Enable verbose output
+    --dry-run               Show what would be installed without executing
+    -h, --help              Show this help message
+
+MODES:
+    minimal                 Basic Nginx installation with essential configuration
+    standard                Standard installation with PHP, SSL, and optimization (ModSecurity disabled)
+    full                    Complete installation with ModSecurity WAF and advanced features
+
+EXAMPLES:
+    $0                                      # Standard installation with www-data user
+    $0 --user shadower                     # Install with shadower as nginx user
+    $0 --mode full --verbose               # Full installation with details
+    $0 --php-version 8.4 --no-modsecurity  # Custom PHP version without ModSecurity
+    $0 --dry-run                           # Preview installation
+
+FEATURES:
+    - Automatic Nginx package installation
+    - Essential module configuration (SSL, HTTP/2, compression, etc.)
+    - PHP-FPM integration with configurable version
+    - Performance optimization configurations
+    - Security enhancements and ModSecurity WAF
+    - Rate limiting and DDoS protection
+    - Bashmin vhost and proxy management integration
+    - Log rotation and monitoring setup
+
+POST-INSTALL:
+    - Use add-vhost.sh to create new virtual hosts
+    - Use add-proxy.sh to create reverse proxy configurations
+    - Check configuration with: nginx -t
+    - Restart service with: systemctl restart nginx
+
+EOF
+}
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -52,6 +108,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --php-version)
             PHP_VERSION="$2"
+            shift 2
+            ;;
+        --user)
+            if [[ "$2" == "www-data" || "$2" == "shadower" ]]; then
+                NGINX_USER="$2"
+            else
+                print_error "Invalid user: $2 (must be 'www-data' or 'shadower')"
+                exit 1
+            fi
             shift 2
             ;;
         --no-ssl)
@@ -109,59 +174,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Function to show help
-show_help() {
-    cat << EOF
-Usage: $0 [OPTIONS]
-
-Install and configure Nginx web server with bashmin integration.
-
-OPTIONS:
-    --mode MODE             Installation mode: minimal, standard, full (default: $INSTALL_MODE)
-    --php-version VERSION   PHP version to configure (default: $PHP_VERSION)
-    --no-ssl                Skip SSL module installation
-    --no-http2              Skip HTTP/2 module installation
-    --no-compression        Skip compression modules
-    --no-caching            Skip caching modules
-    --no-security           Skip security enhancements
-    --no-modsecurity        Skip ModSecurity installation
-    --no-rate-limiting      Skip rate limiting configuration
-    --force                 Force reinstallation even if already installed
-    --quiet                 Suppress non-essential output
-    --verbose               Enable verbose output
-    --dry-run               Show what would be installed without executing
-    -h, --help              Show this help message
-
-MODES:
-    minimal                 Basic Nginx installation with essential configuration
-    standard                Standard installation with PHP, SSL, and optimization
-    full                    Complete installation with ModSecurity and advanced features
-
-EXAMPLES:
-    $0                                      # Standard installation
-    $0 --mode full --verbose               # Full installation with details
-    $0 --php-version 8.4 --no-modsecurity  # Custom PHP version without ModSecurity
-    $0 --dry-run                           # Preview installation
-
-FEATURES:
-    - Automatic Nginx package installation
-    - Essential module configuration (SSL, HTTP/2, compression, etc.)
-    - PHP-FPM integration with configurable version
-    - Performance optimization configurations
-    - Security enhancements and ModSecurity WAF
-    - Rate limiting and DDoS protection
-    - Bashmin vhost and proxy management integration
-    - Log rotation and monitoring setup
-
-POST-INSTALL:
-    - Use add-vhost.sh to create new virtual hosts
-    - Use add-proxy.sh to create reverse proxy configurations
-    - Check configuration with: nginx -t
-    - Restart service with: systemctl restart nginx
-
-EOF
-}
 
 # Function to check if Nginx is installed
 check_nginx_installed() {
@@ -277,6 +289,62 @@ install_nginx_packages() {
     
     if [[ "$QUIET" == false ]]; then
         print_success "Nginx packages installed successfully"
+    fi
+}
+
+# Function to configure nginx user
+configure_nginx_user() {
+    if [[ "$QUIET" == false ]]; then
+        print_info "Configuring Nginx to run as user: $NGINX_USER"
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would configure Nginx user as: $NGINX_USER"
+        return 0
+    fi
+
+    # Ensure user exists
+    if ! id "$NGINX_USER" >/dev/null 2>&1; then
+        if [[ "$NGINX_USER" == "shadower" ]]; then
+            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+                print_info "Creating user: $NGINX_USER"
+            fi
+            sudo useradd -r -s /bin/false -d /var/cache/nginx -c "Nginx web server" "$NGINX_USER" 2>/dev/null || true
+        fi
+    fi
+
+    # Update nginx.conf to use selected user
+    if [[ -f "$NGINX_CONF_DIR/nginx.conf" ]]; then
+        # Backup original
+        sudo cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup.user.$(date +%Y%m%d_%H%M%S)"
+
+        # Update user directive
+        sudo sed -i "s/^user .*/user $NGINX_USER;/" "$NGINX_CONF_DIR/nginx.conf"
+
+        # If user directive doesn't exist, add it at the beginning
+        if ! grep -q "^user " "$NGINX_CONF_DIR/nginx.conf"; then
+            sudo sed -i "1i user $NGINX_USER;" "$NGINX_CONF_DIR/nginx.conf"
+        fi
+    fi
+
+    # Ensure log directory permissions
+    if [[ -d "$NGINX_LOG_DIR" ]]; then
+        sudo chown -R $NGINX_USER:adm "$NGINX_LOG_DIR"
+        sudo chmod 755 "$NGINX_LOG_DIR"
+    fi
+
+    # Ensure cache directories permissions
+    for cache_dir in /var/cache/nginx /var/lib/nginx; do
+        if [[ -d "$cache_dir" ]]; then
+            sudo chown -R $NGINX_USER:$NGINX_USER "$cache_dir"
+        else
+            sudo mkdir -p "$cache_dir"
+            sudo chown -R $NGINX_USER:$NGINX_USER "$cache_dir"
+        fi
+    done
+
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_success "Nginx user configured as: $NGINX_USER"
     fi
 }
 
@@ -431,7 +499,7 @@ EOF
     
     # Create cache directory
     sudo mkdir -p /var/cache/nginx/fastcgi
-    sudo chown www-data:www-data /var/cache/nginx/fastcgi
+    sudo chown $NGINX_USER:$NGINX_USER /var/cache/nginx/fastcgi
     sudo chmod 755 /var/cache/nginx/fastcgi
     
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
@@ -481,10 +549,7 @@ ssl_prefer_server_ciphers on;
 ssl_session_cache shared:SSL:10m;
 ssl_session_timeout 10m;
 
-# Rate limiting zones
-limit_req_zone \$binary_remote_addr zone=login:10m rate=10r/m;
-limit_req_zone \$binary_remote_addr zone=api:10m rate=100r/m;
-limit_req_zone \$binary_remote_addr zone=general:10m rate=200r/m;
+# Note: Rate limiting zones are configured in bashmin-ratelimiting.conf
 
 # Connection limiting
 limit_conn_zone \$binary_remote_addr zone=perip:10m;
@@ -551,9 +616,10 @@ configure_rate_limiting() {
 # Bashmin Rate Limiting Configuration for Nginx
 
 # Define rate limiting zones
-limit_req_zone \$binary_remote_addr zone=borderforce:10m rate=300r/m;
-limit_req_zone \$binary_remote_addr zone=loginzone:10m rate=5r/m;
-limit_req_zone \$binary_remote_addr zone=searchzone:10m rate=30r/m;
+limit_req_zone \$binary_remote_addr zone=general:10m rate=200r/m;
+limit_req_zone \$binary_remote_addr zone=login:10m rate=10r/m;
+limit_req_zone \$binary_remote_addr zone=api:10m rate=100r/m;
+limit_req_zone \$binary_remote_addr zone=search:10m rate=30r/m;
 
 # Connection limits
 limit_conn_zone \$binary_remote_addr zone=connlimitperip:10m;
@@ -572,22 +638,26 @@ large_client_header_buffers 4 4k;
 # Timeout settings
 client_body_timeout 12;
 client_header_timeout 12;
-keepalive_timeout 15;
 send_timeout 10;
 
 # Example usage in server blocks:
 # location / {
-#     limit_req zone=borderforce burst=300 nodelay;
+#     limit_req zone=general burst=200 nodelay;
 #     limit_req_status 429;
 # }
 #
 # location /login {
-#     limit_req zone=loginzone burst=5 nodelay;
+#     limit_req zone=login burst=10 nodelay;
+#     limit_req_status 429;
+# }
+#
+# location /api {
+#     limit_req zone=api burst=100 nodelay;
 #     limit_req_status 429;
 # }
 #
 # location /search {
-#     limit_req zone=searchzone burst=30 nodelay;
+#     limit_req zone=search burst=30 nodelay;
 #     limit_req_status 429;
 # }
 EOF
@@ -718,38 +788,114 @@ setup_log_rotation() {
     fi
 }
 
+# Function to fix existing nginx configuration issues
+fix_existing_config_issues() {
+    if [[ "$QUIET" == false ]]; then
+        print_info "Checking for existing nginx configuration issues..."
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would check and fix existing nginx configuration issues"
+        return 0
+    fi
+
+    # Check if nginx.conf exists
+    if [[ ! -f "$NGINX_CONF_DIR/nginx.conf" ]]; then
+        return 0
+    fi
+
+    local config_changed=false
+
+    # Fix ModSecurity issues if modules aren't installed
+    if grep -q "^[[:space:]]*modsecurity" "$NGINX_CONF_DIR/nginx.conf" && [[ "$ENABLE_MODSECURITY" == false ]]; then
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Disabling ModSecurity directives in existing config..."
+        fi
+
+        # Comment out modsecurity directives
+        sudo sed -i 's/^[[:space:]]*modsecurity/#&/' "$NGINX_CONF_DIR/nginx.conf"
+        config_changed=true
+    fi
+
+    if [[ "$config_changed" == true ]]; then
+        if [[ "$QUIET" == false ]]; then
+            print_success "Fixed existing nginx configuration issues"
+        fi
+    fi
+}
+
 # Function to validate installation
 validate_installation() {
     if [[ "$QUIET" == false ]]; then
         print_info "Validating Nginx installation..."
     fi
-    
+
     if [[ "$DRY_RUN" == true ]]; then
         echo "[DRY-RUN] Would validate installation"
         return 0
     fi
-    
-    # Test Nginx configuration
-    if ! sudo nginx -t >/dev/null 2>&1; then
-        print_error "Nginx configuration test failed"
-        if [[ "$VERBOSE" == true ]]; then
-            print_info "Configuration errors:"
-            sudo nginx -t 2>&1 | head -10
-        fi
-        return 1
+
+    # Test Nginx configuration syntax
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Testing Nginx configuration syntax..."
     fi
-    
-    # Check if Nginx is running
-    if ! sudo systemctl is-active nginx >/dev/null 2>&1; then
+
+    local config_test_output
+    config_test_output=$(sudo nginx -t 2>&1)
+    local config_test_result=$?
+
+    if [[ $config_test_result -ne 0 ]]; then
+        print_error "Nginx configuration test failed"
+        echo "Configuration errors:"
+        echo "$config_test_output"
+
+        # Try to provide helpful suggestions
+        if echo "$config_test_output" | grep -q "duplicate"; then
+            print_info "Suggestion: Check for duplicate directives in configuration files"
+        fi
+        if echo "$config_test_output" | grep -q "unknown directive"; then
+            print_info "Suggestion: Check for typos or unsupported directives"
+        fi
+        if echo "$config_test_output" | grep -q "emerg"; then
+            print_info "Suggestion: Check file syntax and missing semicolons"
+        fi
+
+        return 1
+    else
+        if [[ "$QUIET" == false ]]; then
+            print_success "Nginx configuration test passed"
+        fi
+    fi
+
+    # Reload nginx configuration to apply changes
+    if sudo systemctl is-active nginx >/dev/null 2>&1; then
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Reloading Nginx configuration..."
+        fi
+        sudo systemctl reload nginx
+    else
         if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
             print_info "Starting Nginx service..."
         fi
         sudo systemctl start nginx
     fi
-    
+
     # Enable Nginx to start on boot
     sudo systemctl enable nginx >/dev/null 2>&1
-    
+
+    # Final service status check
+    if sudo systemctl is-active nginx >/dev/null 2>&1; then
+        if [[ "$QUIET" == false ]]; then
+            print_success "Nginx service is running"
+        fi
+    else
+        print_warning "Nginx service may not be running properly"
+        if [[ "$VERBOSE" == true ]]; then
+            print_info "Service status:"
+            sudo systemctl status nginx --no-pager -l | head -10
+        fi
+    fi
+
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_success "Nginx installation validated"
     fi
@@ -768,6 +914,7 @@ show_installation_summary() {
     cat << EOF
 Installation Details:
   Mode:              $INSTALL_MODE
+  Nginx User:        $NGINX_USER
   PHP Version:       $PHP_VERSION
   SSL Enabled:       $(if [[ "$ENABLE_SSL" == true ]]; then echo "Yes"; else echo "No"; fi)
   HTTP/2 Enabled:    $(if [[ "$ENABLE_HTTP2" == true ]]; then echo "Yes"; else echo "No"; fi)
@@ -842,6 +989,7 @@ main() {
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_info "Installation plan:"
         print_info "  Mode: $INSTALL_MODE"
+        print_info "  Nginx User: $NGINX_USER"
         print_info "  PHP Version: $PHP_VERSION"
         print_info "  SSL: $ENABLE_SSL"
         print_info "  HTTP/2: $ENABLE_HTTP2"
@@ -856,13 +1004,24 @@ main() {
             exit 0
         fi
     fi
-    
+
+    # Enable ModSecurity for full mode
+    if [[ "$INSTALL_MODE" == "full" ]]; then
+        ENABLE_MODSECURITY=true
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Full mode: ModSecurity enabled"
+        fi
+    fi
+
     # Install Nginx packages
     install_nginx_packages
-    
+
+    # Configure nginx user
+    configure_nginx_user
+
     # Install system configurations
     install_system_configs
-    
+
     # Configure PHP integration
     configure_php_integration
     
@@ -877,7 +1036,10 @@ main() {
     
     # Create management scripts
     create_management_scripts
-    
+
+    # Fix any existing configuration issues
+    fix_existing_config_issues
+
     # Validate installation
     validate_installation
     

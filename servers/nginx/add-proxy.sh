@@ -41,6 +41,77 @@ VERBOSE=false
 DRY_RUN=false
 QUIET=false
 
+# Function to show help
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS] DOMAIN
+
+Create an Nginx proxy configuration with A/B testing capabilities.
+
+ARGUMENTS:
+    DOMAIN                      Domain name for the proxy (required)
+
+OPTIONS:
+    --production SERVERS        Comma-separated list of production backend servers
+                               Format: ip:port or hostname:port
+    --staging SERVERS          Comma-separated list of staging backend servers
+    --canary SERVERS           Comma-separated list of canary backend servers
+    --ab-test                  Enable A/B testing between production and staging
+    --ab-split PERCENTAGE      A/B test split percentage for staging (default: 50)
+    --load-balancing METHOD    Load balancing method: round_robin, least_conn,
+                               ip_hash, hash, random (default: round_robin)
+    --ssl-cert PATH            Custom SSL certificate path
+    --ssl-key PATH             Custom SSL private key path
+    --no-ssl-redirect          Don't redirect HTTP to HTTPS
+    --enable-websockets        Enable WebSocket support
+    --no-static-caching        Disable static file caching
+    --max-body-size SIZE       Maximum request body size (default: 100M)
+    --no-health-check          Disable health checking
+    --force                    Overwrite existing configuration
+    --quiet                    Suppress non-essential output
+    --verbose                  Enable verbose output
+    --dry-run                  Show what would be created without executing
+    -h, --help                 Show this help message
+
+LOAD BALANCING METHODS:
+    round_robin                Default method, requests distributed evenly
+    least_conn                 Route to server with least active connections
+    ip_hash                    Route based on client IP hash (sticky sessions)
+    hash                       Route based on custom key hash
+    random                     Route requests randomly
+
+A/B TESTING:
+    When A/B testing is enabled, traffic is split between production and staging
+    pools based on the specified percentage. The split is deterministic based
+    on client IP or custom criteria.
+
+EXAMPLES:
+    # Basic proxy to single backend
+    $0 api.local --production 127.0.0.1:8080
+
+    # Load balanced proxy with multiple backends
+    $0 app.local --production 127.0.0.1:8080,127.0.0.1:8081,127.0.0.1:8082
+
+    # A/B testing between production and staging
+    $0 test.local --production 127.0.0.1:8080 --staging 127.0.0.1:8090 --ab-test --ab-split 30
+
+    # Advanced configuration with canary deployment
+    $0 web.local --production 10.0.1.10:80,10.0.1.11:80 \\
+                 --staging 10.0.2.10:80 \\
+                 --canary 10.0.3.10:80 \\
+                 --load-balancing least_conn \\
+                 --enable-websockets
+
+NOTES:
+    - Requires sudo privileges
+    - Automatically enables site configuration
+    - Updates /etc/hosts with 127.0.0.1 entry
+    - Creates SSL configuration if certificates exist
+    - Includes health monitoring and failover
+
+EOF
+}
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -133,77 +204,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# Function to show help
-show_help() {
-    cat << EOF
-Usage: $0 [OPTIONS] DOMAIN
-
-Create an Nginx proxy configuration with A/B testing capabilities.
-
-ARGUMENTS:
-    DOMAIN                      Domain name for the proxy (required)
-
-OPTIONS:
-    --production SERVERS        Comma-separated list of production backend servers
-                               Format: ip:port or hostname:port
-    --staging SERVERS          Comma-separated list of staging backend servers
-    --canary SERVERS           Comma-separated list of canary backend servers
-    --ab-test                  Enable A/B testing between production and staging
-    --ab-split PERCENTAGE      A/B test split percentage for staging (default: 50)
-    --load-balancing METHOD    Load balancing method: round_robin, least_conn, 
-                               ip_hash, hash, random (default: round_robin)
-    --ssl-cert PATH            Custom SSL certificate path
-    --ssl-key PATH             Custom SSL private key path
-    --no-ssl-redirect          Don't redirect HTTP to HTTPS
-    --enable-websockets        Enable WebSocket support
-    --no-static-caching        Disable static file caching
-    --max-body-size SIZE       Maximum request body size (default: 100M)
-    --no-health-check          Disable health checking
-    --force                    Overwrite existing configuration
-    --quiet                    Suppress non-essential output
-    --verbose                  Enable verbose output
-    --dry-run                  Show what would be created without executing
-    -h, --help                 Show this help message
-
-LOAD BALANCING METHODS:
-    round_robin                Default method, requests distributed evenly
-    least_conn                 Route to server with least active connections
-    ip_hash                    Route based on client IP hash (sticky sessions)
-    hash                       Route based on custom key hash
-    random                     Route requests randomly
-
-A/B TESTING:
-    When A/B testing is enabled, traffic is split between production and staging
-    pools based on the specified percentage. The split is deterministic based
-    on client IP or custom criteria.
-
-EXAMPLES:
-    # Basic proxy to single backend
-    $0 api.local --production 127.0.0.1:8080
-
-    # Load balanced proxy with multiple backends
-    $0 app.local --production 127.0.0.1:8080,127.0.0.1:8081,127.0.0.1:8082
-
-    # A/B testing between production and staging
-    $0 test.local --production 127.0.0.1:8080 --staging 127.0.0.1:8090 --ab-test --ab-split 30
-
-    # Advanced configuration with canary deployment
-    $0 web.local --production 10.0.1.10:80,10.0.1.11:80 \
-                 --staging 10.0.2.10:80 \
-                 --canary 10.0.3.10:80 \
-                 --load-balancing least_conn \
-                 --enable-websockets
-
-NOTES:
-    - Requires sudo privileges
-    - Automatically enables site configuration
-    - Updates /etc/hosts with 127.0.0.1 entry
-    - Creates SSL configuration if certificates exist
-    - Includes health monitoring and failover
-
-EOF
-}
 
 # Function to validate domain and inputs
 validate_inputs() {
