@@ -19,7 +19,7 @@ source "$BASE_DIR/_helpers/cli.sh"
 VERBOSE=false
 DRY_RUN=false
 SILENT=false
-SELECTED_VERSION=""
+# SELECTED_VERSION removed - now auto-installing multiple versions
 INSTALL_CLI=true
 INSTALL_FPM=true
 INSTALL_EXTENSIONS=true
@@ -28,10 +28,9 @@ CONFIGURE_PHP=true
 APPLY_PRODUCTION_CONFIG=false
 APPLY_DEVELOPMENT_CONFIG=false
 
-# Available PHP versions (Modern versions for Ubuntu 20.04+)
-PHP_VERSIONS=("8.3" "8.4" "8.5")
-PHP_VERSION_LABELS=("8.3 (Stable)" "8.4 (Stable)" "8.5 (Beta)")
-DEFAULT_VERSION="8.3"
+# PHP versions will be dynamically detected based on Ubuntu version
+PHP_VERSIONS=()
+DEFAULT_VERSION=""
 
 # Common PHP extensions
 PHP_EXTENSIONS=(
@@ -123,30 +122,12 @@ check_php_compatibility() {
     case "$ubuntu_version" in
         "20.04")
             # Ubuntu 20.04: Some limitations for newer PHP versions
-            case "$SELECTED_VERSION" in
-                "8.4")
-                    print_warning "PHP 8.4 on Ubuntu 20.04: FPM package may not be available"
-                    print_info "CLI and most extensions should work fine"
-                    ;;
-                "8.5")
-                    print_warning "PHP 8.5 on Ubuntu 20.04: Limited package availability"
-                    print_info "CLI and basic extensions may be available"
-                    ;;
-                "8.3")
-                    print_info "PHP 8.3 is fully supported on Ubuntu 20.04"
-                    ;;
-            esac
+            print_info "Installing latest available PHP versions for Ubuntu 20.04"
+            print_warning "Note: Newer PHP versions may have limited FPM/extension availability on Ubuntu 20.04"
             ;;
         "22.04"|"24.04")
             # Ubuntu 22.04+: Better support for newer versions
-            case "$SELECTED_VERSION" in
-                "8.5")
-                    print_info "PHP 8.5 should have better availability on Ubuntu $ubuntu_version"
-                    ;;
-                *)
-                    print_info "PHP $SELECTED_VERSION is well supported on Ubuntu $ubuntu_version"
-                    ;;
-            esac
+            print_info "Installing latest available PHP versions for Ubuntu $ubuntu_version"
             ;;
         *)
             print_warning "Ubuntu version $ubuntu_version compatibility not verified"
@@ -168,52 +149,65 @@ is_php_extension_available() {
     fi
 }
 
-# Function to display PHP version selection menu
-select_php_version() {
-    if [[ "$SILENT" == true ]]; then
-        if [[ -z "$SELECTED_VERSION" ]]; then
-            SELECTED_VERSION="$DEFAULT_VERSION"
-        fi
-        print_info "Using PHP $SELECTED_VERSION (silent mode)"
-        return
+# Function to detect available PHP versions based on Ubuntu system
+detect_php_versions() {
+    local ubuntu_version
+    ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "unknown")
+
+    print_info "Detecting available PHP versions for Ubuntu $ubuntu_version..."
+
+    # Add ondrej/php repository first to get latest versions
+    if ! grep -q "ondrej/php" /etc/apt/sources.list.d/* 2>/dev/null; then
+        print_info "Adding ondrej/php PPA repository for version detection..."
+        execute_command "sudo add-apt-repository -y ppa:ondrej/php" "Adding ondrej/php PPA"
+        execute_command "sudo apt update" "Updating package lists"
     fi
-    
-    # Find default version index
-    local default_index=0
-    for i in "${!PHP_VERSIONS[@]}"; do
-        if [[ "${PHP_VERSIONS[$i]}" == "$DEFAULT_VERSION" ]]; then
-            default_index=$i
+
+    # Detect all available PHP versions from repository
+    local all_versions=()
+    local available_versions=()
+
+    # Get all PHP versions available in the repository
+    mapfile -t all_versions < <(apt-cache search --names-only '^php[0-9]\.[0-9]$' | grep -o 'php[0-9]\.[0-9]' | sed 's/php//' | sort -V)
+
+    print_info "Found PHP versions in repository: ${all_versions[*]}"
+
+    # Filter to only supported/maintained versions and check CLI availability
+    for version in "${all_versions[@]}"; do
+        # Check if CLI package is available (basic requirement)
+        if apt-cache show "php${version}-cli" >/dev/null 2>&1; then
+            # Only include PHP 7.4+ (older versions are deprecated)
+            if [[ $(echo "$version" | cut -d. -f1) -ge 7 ]] && [[ $(echo "$version" | cut -d. -f2) -ge 4 ]] || [[ $(echo "$version" | cut -d. -f1) -ge 8 ]]; then
+                available_versions+=("$version")
+            fi
+        fi
+    done
+
+    # Take up to the latest 3 available versions
+    local total_versions=${#available_versions[@]}
+    local start_index=$((total_versions > 3 ? total_versions - 3 : 0))
+
+    PHP_VERSIONS=("${available_versions[@]:$start_index}")
+
+    if [[ ${#PHP_VERSIONS[@]} -eq 0 ]]; then
+        print_error "No supported PHP versions found in repository"
+        exit 1
+    fi
+
+    # Set the latest stable version as default (not beta/RC)
+    DEFAULT_VERSION="${PHP_VERSIONS[-1]}"
+
+    # Find the latest stable version (skip beta/RC/alpha versions)
+    for i in $(seq $((${#PHP_VERSIONS[@]} - 1)) -1 0); do
+        version="${PHP_VERSIONS[$i]}"
+        if ! apt-cache show "php${version}" 2>/dev/null | grep -iq "beta\|rc\|alpha"; then
+            DEFAULT_VERSION="$version"
             break
         fi
     done
-    
-    # Create reordered arrays with default first
-    local reordered_versions=()
-    local reordered_labels=()
-    
-    # Add default version first
-    reordered_versions+=("${PHP_VERSIONS[$default_index]}")
-    reordered_labels+=("${PHP_VERSION_LABELS[$default_index]}")
-    
-    # Add other versions
-    for i in "${!PHP_VERSIONS[@]}"; do
-        if [[ "$i" != "$default_index" ]]; then
-            reordered_versions+=("${PHP_VERSIONS[$i]}")
-            reordered_labels+=("${PHP_VERSION_LABELS[$i]}")
-        fi
-    done
-    
-    SELECTED_VERSION=$(show_selection_menu "Available PHP versions" "${reordered_labels[@]}")
-    
-    # Convert label back to version number
-    for i in "${!reordered_labels[@]}"; do
-        if [[ "${reordered_labels[$i]}" == "$SELECTED_VERSION" ]]; then
-            SELECTED_VERSION="${reordered_versions[$i]}"
-            break
-        fi
-    done
-    
-    print_success "Selected PHP $SELECTED_VERSION"
+
+    print_success "Selected PHP versions for installation: ${PHP_VERSIONS[*]}"
+    print_success "Default version (CLI symlinks): $DEFAULT_VERSION"
 }
 
 # Function to configure installation options
@@ -275,58 +269,96 @@ configure_installation() {
     fi
 }
 
-# Function to install PHP packages
+# Function to install all PHP versions
 install_php() {
-    local packages=()
-    local available_extensions=()
-    local unavailable_extensions=()
-    
-    # Add base PHP package
-    packages+=("php${SELECTED_VERSION}")
-    
-    # Add CLI (always installed)
-    packages+=("php${SELECTED_VERSION}-cli")
-    
-    # Add FPM if available
-    if apt-cache show "php${SELECTED_VERSION}-fpm" >/dev/null 2>&1; then
-        packages+=("php${SELECTED_VERSION}-fpm")
-        print_info "PHP FPM will be installed"
-    else
-        print_warning "PHP ${SELECTED_VERSION}-FPM is not available on this system"
-        print_info "Only PHP CLI will be installed"
-        INSTALL_FPM=false
-    fi
-    
-    # Add extensions if selected
-    if [[ "$INSTALL_EXTENSIONS" == true ]]; then
-        print_info "Checking extension availability for PHP ${SELECTED_VERSION}..."
-        
-        for ext in "${PHP_EXTENSIONS[@]}"; do
-            if is_php_extension_available "$SELECTED_VERSION" "$ext"; then
-                packages+=("php${SELECTED_VERSION}-${ext}")
-                available_extensions+=("$ext")
-            else
-                unavailable_extensions+=("$ext")
+    local all_packages=()
+    local fmp_available_versions=()
+
+    print_info "Installing PHP versions: ${PHP_VERSIONS[*]}"
+
+    # Install each PHP version
+    for version in "${PHP_VERSIONS[@]}"; do
+        local version_packages=()
+        local available_extensions=()
+        local unavailable_extensions=()
+
+        print_info "Preparing PHP ${version} packages..."
+
+        # Add base PHP package and CLI
+        version_packages+=("php${version}" "php${version}-cli")
+
+        # Check FPM availability
+        if apt-cache show "php${version}-fpm" >/dev/null 2>&1; then
+            version_packages+=("php${version}-fpm")
+            fmp_available_versions+=("$version")
+            print_info "PHP ${version}-FPM will be installed"
+        else
+            print_warning "PHP ${version}-FPM is not available"
+        fi
+
+        # Add extensions if selected
+        if [[ "$INSTALL_EXTENSIONS" == true ]]; then
+            print_info "Checking extension availability for PHP ${version}..."
+
+            for ext in "${PHP_EXTENSIONS[@]}"; do
+                if is_php_extension_available "$version" "$ext"; then
+                    version_packages+=("php${version}-${ext}")
+                    available_extensions+=("$ext")
+                else
+                    unavailable_extensions+=("$ext")
+                fi
+            done
+
+            if [[ ${#available_extensions[@]} -gt 0 ]]; then
+                print_info "PHP ${version} available extensions: ${available_extensions[*]}"
             fi
-        done
-        
-        if [[ ${#available_extensions[@]} -gt 0 ]]; then
-            print_info "Available extensions: ${available_extensions[*]}"
+
+            if [[ ${#unavailable_extensions[@]} -gt 0 ]]; then
+                print_warning "PHP ${version} unavailable extensions: ${unavailable_extensions[*]}"
+            fi
         fi
-        
-        if [[ ${#unavailable_extensions[@]} -gt 0 ]]; then
-            print_warning "Skipping unavailable extensions: ${unavailable_extensions[*]}"
+
+        # Add to master package list
+        all_packages+=("${version_packages[@]}")
+    done
+
+    # Install all packages at once
+    print_info "Installing all PHP packages..."
+    install_packages "${all_packages[@]}"
+
+    # Set up alternatives for default PHP CLI
+    print_info "Configuring PHP CLI alternatives..."
+    local priority=100
+    for version in "${PHP_VERSIONS[@]}"; do
+        if [[ "$version" == "$DEFAULT_VERSION" ]]; then
+            priority=200  # Higher priority for default version
+        else
+            priority=100
         fi
+
+        execute_command "sudo update-alternatives --install /usr/bin/php php /usr/bin/php${version} $priority" "Setting up PHP $version alternative"
+    done
+
+    # Set FPM availability flag
+    if [[ ${#fmp_available_versions[@]} -gt 0 ]]; then
+        INSTALL_FPM=true
+        print_success "PHP FPM available for versions: ${fmp_available_versions[*]}"
+    else
+        INSTALL_FPM=false
+        print_warning "PHP FPM not available for any installed versions"
     fi
-    
-    install_packages "${packages[@]}"
 }
 
 # Function to configure PHP FPM
 configure_php_fpm() {
     if [[ "$INSTALL_FPM" == true ]]; then
-        print_info "Configuring PHP FPM..."
-        enable_start_service "php${SELECTED_VERSION}-fpm"
+        print_info "Configuring PHP FPM for all installed versions..."
+        for version in "${PHP_VERSIONS[@]}"; do
+            if systemctl list-unit-files | grep -q "php${version}-fpm.service"; then
+                print_info "Enabling PHP ${version}-FPM service..."
+                enable_start_service "php${version}-fpm"
+            fi
+        done
     else
         print_info "Skipping PHP FPM configuration (not installed)"
     fi
@@ -337,10 +369,10 @@ install_apache_mod() {
     if [[ "$INSTALL_APACHE_MOD" == true ]]; then
         print_info "Installing Apache2 and PHP module..."
         
-        install_packages "apache2" "libapache2-mod-php${SELECTED_VERSION}"
-        
+        install_packages "apache2" "libapache2-mod-php${DEFAULT_VERSION}"
+
         # Enable PHP module and mod_rewrite
-        execute_command "sudo a2enmod php${SELECTED_VERSION}" "Enabling PHP module"
+        execute_command "sudo a2enmod php${DEFAULT_VERSION}" "Enabling PHP module"
         execute_command "sudo a2enmod rewrite" "Enabling mod_rewrite"
         
         enable_start_service "apache2"
@@ -456,11 +488,11 @@ configure_php_installation() {
     fi
     
     if [[ "$DRY_RUN" == true ]]; then
-        print_info "[DRY-RUN] Would configure PHP $SELECTED_VERSION"
+        print_info "[DRY-RUN] Would configure PHP versions: ${PHP_VERSIONS[*]}"
         return 0
     fi
     
-    print_info "Configuring PHP $SELECTED_VERSION with optimized settings..."
+    print_info "Configuring PHP versions ${PHP_VERSIONS[*]} with optimized settings..."
     
     # Apply environment-specific settings
     if [[ "$APPLY_PRODUCTION_CONFIG" == true ]]; then
@@ -469,23 +501,25 @@ configure_php_installation() {
         apply_development_settings
     fi
     
-    # Configure CLI
-    if [[ "$INSTALL_CLI" == true ]]; then
-        configure_php_version "$SELECTED_VERSION" "cli"
-    fi
-    
-    # Configure FPM
-    if [[ "$INSTALL_FPM" == true ]]; then
-        configure_php_version "$SELECTED_VERSION" "fpm"
-        
-        # Restart FPM service to apply new configuration
-        execute_command "sudo systemctl restart php${SELECTED_VERSION}-fpm" "Restarting PHP $SELECTED_VERSION FPM"
-    fi
-    
-    # Configure Apache module
+    # Configure CLI for all versions
+    for version in "${PHP_VERSIONS[@]}"; do
+        if [[ "$INSTALL_CLI" == true ]]; then
+            configure_php_version "$version" "cli"
+        fi
+
+        # Configure FPM for this version if available
+        if [[ "$INSTALL_FPM" == true ]] && systemctl list-unit-files | grep -q "php${version}-fpm.service"; then
+            configure_php_version "$version" "fpm"
+
+            # Restart FPM service to apply new configuration
+            execute_command "sudo systemctl restart php${version}-fpm" "Restarting PHP $version FPM"
+        fi
+    done
+
+    # Configure Apache module (only for default version)
     if [[ "$INSTALL_APACHE_MOD" == true ]]; then
-        configure_php_version "$SELECTED_VERSION" "apache2"
-        
+        configure_php_version "$DEFAULT_VERSION" "apache2"
+
         # Reload Apache to apply new configuration
         execute_command "sudo systemctl reload apache2" "Reloading Apache configuration"
     fi
@@ -497,7 +531,8 @@ configure_php_installation() {
 show_summary() {
     echo
     print_success "Installation Summary:"
-    echo "  PHP Version: $SELECTED_VERSION"
+    echo "  PHP Versions: ${PHP_VERSIONS[*]}"
+    echo "  Default Version: $DEFAULT_VERSION"
     echo "  PHP CLI: $([ "$INSTALL_CLI" == true ] && echo "✓ Installed" || echo "✗ Skipped")"
     echo "  PHP FPM: $([ "$INSTALL_FPM" == true ] && echo "✓ Installed" || echo "✗ Skipped")"
     echo "  Extensions: $([ "$INSTALL_EXTENSIONS" == true ] && echo "✓ Installed" || echo "✗ Skipped")"
@@ -692,15 +727,15 @@ main() {
     # Pre-installation checks
     check_ubuntu_system
     
-    # Interactive configuration
-    select_php_version
-    check_php_compatibility
+    # Auto-detect and configure PHP versions
+    detect_php_versions
     configure_installation
     
     # Confirmation
     echo
     print_info "Installation Plan:"
-    echo "  PHP Version: $SELECTED_VERSION"
+    echo "  PHP Versions: ${PHP_VERSIONS[*]}"
+    echo "  Default Version: $DEFAULT_VERSION"
     echo "  PHP CLI: Yes (auto-install)"
     echo "  PHP FPM: $([ "$INSTALL_FPM" == true ] && echo "Yes (auto-install)" || echo "Will check availability")"
     echo "  Extensions: $([ "$INSTALL_EXTENSIONS" == true ] && echo "Yes" || echo "No")"

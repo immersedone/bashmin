@@ -211,8 +211,11 @@ check_prerequisites() {
     
     # Check if running as root or with sudo
     if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+        print_info "This script requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
     # Check OS compatibility
