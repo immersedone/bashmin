@@ -39,6 +39,8 @@ ENABLE_MODSECURITY=false
 ENABLE_RATE_LIMITING=true
 PHP_VERSION="8.3"
 NGINX_USER="www-data"
+SERVER_HEADER="ImmersedOne"
+HIDE_SERVER_HEADER=false
 FORCE_INSTALL=false
 VERBOSE=false
 DRY_RUN=false
@@ -55,14 +57,17 @@ OPTIONS:
     --mode MODE             Installation mode: minimal, standard, full (default: $INSTALL_MODE)
     --php-version VERSION   PHP version to configure (default: $PHP_VERSION)
     --user USER             Nginx worker process user: www-data or shadower (default: $NGINX_USER)
+    --server-header NAME    Set custom Server header value (default: $SERVER_HEADER)
+    --hide-server-header    Remove Server header completely
     --no-ssl                Skip SSL module installation
     --no-http2              Skip HTTP/2 module installation
     --no-compression        Skip compression modules
     --no-caching            Skip caching modules
     --no-security           Skip security enhancements
-    --no-modsecurity        Skip ModSecurity installation
+    --enable-modsecurity    Enable ModSecurity WAF (requires module)
+    --no-modsecurity        Skip ModSecurity installation (default)
     --no-rate-limiting      Skip rate limiting configuration
-    --force                 Force reinstallation even if already installed
+    --force                 Force reinstallation (creates timestamped backup)
     --quiet                 Suppress non-essential output
     --verbose               Enable verbose output
     --dry-run               Show what would be installed without executing
@@ -78,6 +83,8 @@ EXAMPLES:
     $0 --user shadower                     # Install with shadower as nginx user
     $0 --mode full --verbose               # Full installation with details
     $0 --php-version 8.4 --no-modsecurity  # Custom PHP version without ModSecurity
+    $0 --server-header MyServer            # Set custom Server header
+    $0 --hide-server-header                # Remove Server header completely
     $0 --dry-run                           # Preview installation
 
 FEATURES:
@@ -119,6 +126,14 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        --server-header)
+            SERVER_HEADER="$2"
+            shift 2
+            ;;
+        --hide-server-header)
+            HIDE_SERVER_HEADER=true
+            shift
+            ;;
         --no-ssl)
             ENABLE_SSL=false
             shift
@@ -137,6 +152,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-security)
             ENABLE_SECURITY=false
+            shift
+            ;;
+        --enable-modsecurity)
+            ENABLE_MODSECURITY=true
             shift
             ;;
         --no-modsecurity)
@@ -313,17 +332,23 @@ configure_nginx_user() {
         fi
     fi
 
-    # Update nginx.conf to use selected user
+    # Update nginx.conf to use selected user (in case it's an existing installation)
     if [[ -f "$NGINX_CONF_DIR/nginx.conf" ]]; then
-        # Backup original
-        sudo cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup.user.$(date +%Y%m%d_%H%M%S)"
+        # Check if nginx.conf has placeholder or wrong user
+        if grep -q "{NGINX_USER}" "$NGINX_CONF_DIR/nginx.conf" || ! grep -q "^user $NGINX_USER;" "$NGINX_CONF_DIR/nginx.conf"; then
+            # Backup original
+            sudo cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup.user.$(date +%Y%m%d_%H%M%S)"
 
-        # Update user directive
-        sudo sed -i "s/^user .*/user $NGINX_USER;/" "$NGINX_CONF_DIR/nginx.conf"
+            # Replace placeholder if exists
+            sudo sed -i "s/{NGINX_USER}/$NGINX_USER/g" "$NGINX_CONF_DIR/nginx.conf"
 
-        # If user directive doesn't exist, add it at the beginning
-        if ! grep -q "^user " "$NGINX_CONF_DIR/nginx.conf"; then
-            sudo sed -i "1i user $NGINX_USER;" "$NGINX_CONF_DIR/nginx.conf"
+            # Update existing user directive
+            sudo sed -i "s/^user .*/user $NGINX_USER;/" "$NGINX_CONF_DIR/nginx.conf"
+
+            # If user directive doesn't exist, add it at the beginning
+            if ! grep -q "^user " "$NGINX_CONF_DIR/nginx.conf"; then
+                sudo sed -i "1i user $NGINX_USER;" "$NGINX_CONF_DIR/nginx.conf"
+            fi
         fi
     fi
 
@@ -348,33 +373,142 @@ configure_nginx_user() {
     fi
 }
 
+# Function to backup existing configurations
+backup_existing_configs() {
+    if [[ "$FORCE_INSTALL" == false ]]; then
+        return 0
+    fi
+
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local backup_dir="$NGINX_CONF_DIR/backups/$timestamp"
+    local configs_backed_up=false
+
+    if [[ "$QUIET" == false ]]; then
+        print_info "Creating backup of existing configurations..."
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would create backup in: $backup_dir"
+        return 0
+    fi
+
+    # Create backup directory
+    sudo mkdir -p "$backup_dir"
+
+    # Backup main nginx.conf
+    if [[ -f "$NGINX_CONF_DIR/nginx.conf" ]]; then
+        sudo cp "$NGINX_CONF_DIR/nginx.conf" "$backup_dir/nginx.conf"
+        configs_backed_up=true
+    fi
+
+    # Backup conf.d directory
+    if [[ -d "$NGINX_CONF_D" ]] && [[ "$(ls -A $NGINX_CONF_D 2>/dev/null)" ]]; then
+        sudo cp -r "$NGINX_CONF_D" "$backup_dir/"
+        configs_backed_up=true
+    fi
+
+    # Backup sites-available
+    if [[ -d "$NGINX_SITES_AVAILABLE" ]] && [[ "$(ls -A $NGINX_SITES_AVAILABLE 2>/dev/null)" ]]; then
+        sudo mkdir -p "$backup_dir/sites-available"
+        sudo cp -r "$NGINX_SITES_AVAILABLE"/* "$backup_dir/sites-available/" 2>/dev/null || true
+        configs_backed_up=true
+    fi
+
+    # Backup sites-enabled
+    if [[ -d "$NGINX_SITES_ENABLED" ]] && [[ "$(ls -A $NGINX_SITES_ENABLED 2>/dev/null)" ]]; then
+        sudo mkdir -p "$backup_dir/sites-enabled"
+        sudo cp -r "$NGINX_SITES_ENABLED"/* "$backup_dir/sites-enabled/" 2>/dev/null || true
+        configs_backed_up=true
+    fi
+
+    # Backup modules configuration
+    if [[ -d "$NGINX_MODULES_ENABLED" ]] && [[ "$(ls -A $NGINX_MODULES_ENABLED 2>/dev/null)" ]]; then
+        sudo mkdir -p "$backup_dir/modules-enabled"
+        sudo cp -r "$NGINX_MODULES_ENABLED"/* "$backup_dir/modules-enabled/" 2>/dev/null || true
+        configs_backed_up=true
+    fi
+
+    if [[ "$configs_backed_up" == true ]]; then
+        # Create backup info file
+        sudo tee "$backup_dir/backup_info.txt" > /dev/null << EOF
+Nginx Configuration Backup
+==========================
+Timestamp: $timestamp
+Date: $(date)
+User: $(whoami)
+Force: $FORCE_INSTALL
+Nginx Version: $(nginx -v 2>&1)
+EOF
+
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_success "Backup created at: $backup_dir"
+        fi
+
+        # Keep only last 10 backups
+        if [[ -d "$NGINX_CONF_DIR/backups" ]]; then
+            local backup_count=$(ls -1 "$NGINX_CONF_DIR/backups" | wc -l)
+            if [[ $backup_count -gt 10 ]]; then
+                if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+                    print_info "Cleaning old backups (keeping last 10)..."
+                fi
+                ls -1t "$NGINX_CONF_DIR/backups" | tail -n +11 | while read old_backup; do
+                    sudo rm -rf "$NGINX_CONF_DIR/backups/$old_backup"
+                done
+            fi
+        fi
+    else
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_warning "No existing configurations found to backup"
+        fi
+    fi
+}
+
 # Function to install system configurations
 install_system_configs() {
     if [[ "$QUIET" == false ]]; then
         print_info "Installing system configurations..."
     fi
-    
+
     if [[ ! -d "$SYSTEM_CONFIGS" ]]; then
         print_warning "System configurations not found: $SYSTEM_CONFIGS"
         return 0
     fi
-    
+
     if [[ "$DRY_RUN" == true ]]; then
         echo "[DRY-RUN] Would install system configurations"
         return 0
     fi
-    
-    # Backup existing configuration
-    if [[ -f "$NGINX_CONF_DIR/nginx.conf" ]]; then
-        sudo cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup.$(date +%Y%m%d_%H%M%S)"
-    fi
-    
     # Install main nginx.conf if available
     if [[ -f "$SYSTEM_CONFIGS/nginx.conf" ]]; then
         if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_info "Installing main Nginx configuration..."
+            print_info "Installing main Nginx configuration with user: $NGINX_USER"
         fi
+        # Copy template and replace placeholders
         sudo cp "$SYSTEM_CONFIGS/nginx.conf" "$NGINX_CONF_DIR/nginx.conf"
+        sudo sed -i "s/{NGINX_USER}/$NGINX_USER/g" "$NGINX_CONF_DIR/nginx.conf"
+
+        # Configure Server header based on flags
+        if [[ "$HIDE_SERVER_HEADER" == true ]]; then
+            # Completely remove the Server header
+            local server_header_config="more_clear_headers Server;"
+            sudo sed -i "s|{SERVER_HEADER_CONFIG}|$server_header_config|" "$NGINX_CONF_DIR/nginx.conf"
+        elif [[ -n "$SERVER_HEADER" ]]; then
+            # Set custom Server header
+            local server_header_config="more_set_headers 'Server: $SERVER_HEADER';"
+            sudo sed -i "s|{SERVER_HEADER_CONFIG}|$server_header_config|" "$NGINX_CONF_DIR/nginx.conf"
+        else
+            # No server header modification
+            sudo sed -i "s|{SERVER_HEADER_CONFIG}|# Server header not modified|" "$NGINX_CONF_DIR/nginx.conf"
+        fi
+
+        # Configure ModSecurity based on flag
+        if [[ "$ENABLE_MODSECURITY" == true ]]; then
+            local modsec_config="modsecurity on;\n        modsecurity_rules_file /etc/nginx/modsec/main.conf;"
+            sudo sed -i "s|{MODSECURITY_CONFIG}|$modsec_config|" "$NGINX_CONF_DIR/nginx.conf"
+        else
+            # Comment out or remove ModSecurity directives
+            sudo sed -i "s|{MODSECURITY_CONFIG}|# modsecurity off; (not enabled)|" "$NGINX_CONF_DIR/nginx.conf"
+        fi
     fi
     
     # Install site configurations
@@ -527,11 +661,10 @@ configure_security() {
     
     sudo tee "$security_conf" > /dev/null << EOF
 # Bashmin Security Configuration for Nginx
+# Focus: Security headers only
+# Note: All other settings are configured in main nginx.conf or other dedicated configs
 
-# Hide Nginx version
-server_tokens off;
-
-# Security headers
+# Security headers for all requests
 add_header X-Content-Type-Options nosniff always;
 add_header X-Frame-Options DENY always;
 add_header X-XSS-Protection "1; mode=block" always;
@@ -540,53 +673,8 @@ add_header X-Download-Options noopen always;
 add_header X-Permitted-Cross-Domain-Policies none always;
 
 # Remove server header completely (requires headers-more module)
+# Comment out if headers-more module is not available
 more_clear_headers Server;
-
-# SSL Security (when SSL is enabled)
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers ECDHE+AESGCM:ECDHE+AES256:ECDHE+AES128:!aNULL:!MD5:!DSS;
-ssl_prefer_server_ciphers on;
-ssl_session_cache shared:SSL:10m;
-ssl_session_timeout 10m;
-
-# Note: Rate limiting zones are configured in bashmin-ratelimiting.conf
-
-# Connection limiting
-limit_conn_zone \$binary_remote_addr zone=perip:10m;
-limit_conn_zone \$server_name zone=perserver:10m;
-
-# Buffer size limits
-client_body_buffer_size 1K;
-client_header_buffer_size 1k;
-client_max_body_size 100M;
-large_client_header_buffers 2 1k;
-
-# Timeouts
-client_body_timeout 10;
-client_header_timeout 10;
-keepalive_timeout 5 5;
-send_timeout 10;
-
-# File upload restrictions
-location ~* \.(php|pl|py|jsp|asp|sh|cgi)$ {
-    try_files \$uri =404;
-}
-
-# Block common attack patterns
-location ~* (wp-config|\.htaccess|\.htpasswd|\.user\.ini) {
-    deny all;
-    return 404;
-}
-
-location ~* /\. {
-    deny all;
-    return 404;
-}
-
-location ~* \.(log|conf|cfg|bak|backup|old|tmp|swp)$ {
-    deny all;
-    return 404;
-}
 EOF
     
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
@@ -629,13 +717,13 @@ limit_conn_zone \$server_name zone=connlimitperserver:10m;
 limit_conn connlimitperip 16;
 limit_conn connlimitperserver 1000;
 
-# Request size limits
+# Request size limits - consolidated here to avoid duplicates
 client_max_body_size 100M;
 client_body_buffer_size 128k;
 client_header_buffer_size 1k;
 large_client_header_buffers 4 4k;
 
-# Timeout settings
+# Timeout settings - consolidated here to avoid duplicates
 client_body_timeout 12;
 client_header_timeout 12;
 send_timeout 10;
@@ -815,6 +903,90 @@ fix_existing_config_issues() {
         # Comment out modsecurity directives
         sudo sed -i 's/^[[:space:]]*modsecurity/#&/' "$NGINX_CONF_DIR/nginx.conf"
         config_changed=true
+    fi
+
+    # Fix duplicate server_tokens directive
+    if [[ -f "$NGINX_CONF_D/bashmin-security.conf" ]] && grep -q "^server_tokens" "$NGINX_CONF_D/bashmin-security.conf"; then
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Removing duplicate server_tokens from security config..."
+        fi
+
+        # Remove duplicate server_tokens from security config
+        sudo sed -i '/^server_tokens/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# Hide Nginx version/d' "$NGINX_CONF_D/bashmin-security.conf"
+        config_changed=true
+    fi
+
+    # Fix duplicate SSL directives
+    if [[ -f "$NGINX_CONF_D/bashmin-security.conf" ]] && grep -q "^ssl_" "$NGINX_CONF_D/bashmin-security.conf"; then
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Removing duplicate SSL directives from security config..."
+        fi
+
+        # Remove SSL-related duplicates from security config
+        sudo sed -i '/^ssl_protocols/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^ssl_ciphers/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^ssl_prefer_server_ciphers/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^ssl_session_cache/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^ssl_session_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# SSL Security/d' "$NGINX_CONF_D/bashmin-security.conf"
+        config_changed=true
+    fi
+
+    # Fix duplicate client/buffer/timeout directives in security config
+    if [[ -f "$NGINX_CONF_D/bashmin-security.conf" ]] && (grep -q "^client_" "$NGINX_CONF_D/bashmin-security.conf" || grep -q "^keepalive_timeout" "$NGINX_CONF_D/bashmin-security.conf" || grep -q "^send_timeout" "$NGINX_CONF_D/bashmin-security.conf"); then
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Removing duplicate client/timeout directives from security config..."
+        fi
+
+        # Remove client and timeout directives that belong in main config or ratelimiting config
+        sudo sed -i '/^client_body_buffer_size/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^client_header_buffer_size/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^client_max_body_size/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^large_client_header_buffers/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^client_body_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^client_header_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^keepalive_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^send_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# Buffer size limits/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# Timeouts/d' "$NGINX_CONF_D/bashmin-security.conf"
+        config_changed=true
+    fi
+
+    # Fix duplicate connection limiting and location blocks in security config
+    if [[ -f "$NGINX_CONF_D/bashmin-security.conf" ]] && (grep -q "^limit_conn_zone" "$NGINX_CONF_D/bashmin-security.conf" || grep -q "^location" "$NGINX_CONF_D/bashmin-security.conf"); then
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Removing connection limits and location blocks from security config..."
+        fi
+
+        # Remove connection limiting and location blocks that don't belong in security config
+        sudo sed -i '/^limit_conn_zone/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# Connection limiting/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# File upload restrictions/,/^}$/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^# Block common attack patterns/,/^}$/d' "$NGINX_CONF_D/bashmin-security.conf"
+        sudo sed -i '/^location.*{/,/^}/d' "$NGINX_CONF_D/bashmin-security.conf"
+        config_changed=true
+    fi
+
+    # Fix duplicate client/buffer settings between rate limiting and security configs
+    if [[ -f "$NGINX_CONF_D/bashmin-ratelimiting.conf" ]] && [[ -f "$NGINX_CONF_D/bashmin-security.conf" ]]; then
+        # Check if both configs have client buffer settings
+        if grep -q "^client_.*buffer" "$NGINX_CONF_D/bashmin-ratelimiting.conf" && grep -q "^client_.*buffer" "$NGINX_CONF_D/bashmin-security.conf"; then
+            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+                print_info "Removing duplicate client buffer settings from security config (keeping in ratelimiting config)..."
+            fi
+
+            # Remove client buffer and timeout settings from security config to avoid conflicts with ratelimiting config
+            sudo sed -i '/^client_body_buffer_size/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^client_header_buffer_size/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^client_max_body_size/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^large_client_header_buffers/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^client_body_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^client_header_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^keepalive_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+            sudo sed -i '/^send_timeout/d' "$NGINX_CONF_D/bashmin-security.conf"
+            config_changed=true
+        fi
     fi
 
     if [[ "$config_changed" == true ]]; then
@@ -1019,26 +1191,29 @@ main() {
     # Configure nginx user
     configure_nginx_user
 
+    # Backup existing configurations if using --force
+    backup_existing_configs
+
+    # Fix any existing configuration issues FIRST before installing new configs
+    fix_existing_config_issues
+
     # Install system configurations
     install_system_configs
 
     # Configure PHP integration
     configure_php_integration
-    
+
     # Configure security settings
     configure_security
-    
+
     # Configure rate limiting
     configure_rate_limiting
-    
+
     # Setup log rotation
     setup_log_rotation
-    
+
     # Create management scripts
     create_management_scripts
-
-    # Fix any existing configuration issues
-    fix_existing_config_issues
 
     # Validate installation
     validate_installation
