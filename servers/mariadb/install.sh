@@ -9,6 +9,7 @@
 #   -h, --help      Show this help message
 #   -v, --verbose   Enable verbose output
 #   -n, --dry-run   Show what would be done without executing
+#   -f, --force     Force installation even if already installed
 #   --root-password Set root password (prompted if not provided)
 #
 
@@ -31,7 +32,10 @@ readonly DEFAULT_ROOT_PASSWORD=""
 # Configuration
 VERBOSE=false
 DRY_RUN=false
+FORCE_INSTALL=false
 ROOT_PASSWORD=""
+ADMIN_USERNAME="devops"
+ADMIN_PASSWORD=""
 
 # Function to show usage
 show_usage() {
@@ -42,14 +46,16 @@ Install latest MariaDB server with secure configuration.
 
 Options:
     -h, --help              Show this help message
-    -v, --verbose           Enable verbose output  
+    -v, --verbose           Enable verbose output
     -n, --dry-run           Show what would be done without executing
+    -f, --force             Force installation even if already installed
     --root-password PASS    Set root password (prompted if not provided)
 
 Examples:
     $0                      Install with prompted root password
     $0 -v                   Install with verbose output
     $0 --root-password secret123    Install with specified password
+    $0 -f                   Force install even if already installed
     $0 -n                   Dry run to see what would be installed
 
 EOF
@@ -69,6 +75,10 @@ parse_arguments() {
                 ;;
             -n|--dry-run)
                 DRY_RUN=true
+                shift
+                ;;
+            -f|--force)
+                FORCE_INSTALL=true
                 shift
                 ;;
             --root-password)
@@ -103,10 +113,14 @@ validate_prerequisites() {
         status=$(get_service_status "$MARIADB_SERVICE")
         print_info "Current MariaDB service status: $status"
         
-        read -p "Continue with installation? This will update existing installation. (y/N): " -r
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Installation cancelled by user"
-            exit 0
+        if [[ "$FORCE_INSTALL" != "true" ]]; then
+            read -p "Continue with installation? This will update existing installation. (y/N): " -r
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_info "Installation cancelled by user"
+                exit 0
+            fi
+        else
+            print_info "Force install enabled, proceeding with installation"
         fi
     fi
     
@@ -124,7 +138,7 @@ prompt_root_password() {
                 print_warning "Password should be at least 8 characters long"
                 continue
             fi
-            
+
             read -s -p "Confirm MariaDB root password: " confirm_password
             echo
             if [[ "$ROOT_PASSWORD" == "$confirm_password" ]]; then
@@ -135,6 +149,65 @@ prompt_root_password() {
         done
         print_success "Root password set"
     fi
+}
+
+# Function to prompt for admin user details
+prompt_admin_user() {
+    print_info "Setting up alternative MariaDB admin user..."
+
+    # Prompt for username
+    read -p "Enter admin username (default: devops): " ADMIN_USERNAME
+    if [[ -z "$ADMIN_USERNAME" ]]; then
+        ADMIN_USERNAME="devops"
+    fi
+
+    # Validate username (basic validation)
+    if [[ ! "$ADMIN_USERNAME" =~ ^[a-zA-Z][a-zA-Z0-9_]*$ ]]; then
+        print_error "Invalid username. Must start with a letter and contain only letters, numbers, and underscores."
+        exit 1
+    fi
+
+    print_success "Admin username set: $ADMIN_USERNAME"
+
+    # Check if admin user already exists
+    local admin_exists=false
+    if [[ -n "$ROOT_PASSWORD" ]]; then
+        if sudo mysql -u root -p"$ROOT_PASSWORD" -e "SELECT User FROM mysql.user WHERE User='$ADMIN_USERNAME' LIMIT 1;" 2>/dev/null | grep -q "$ADMIN_USERNAME"; then
+            admin_exists=true
+        fi
+    else
+        if sudo mysql -u root -e "SELECT User FROM mysql.user WHERE User='$ADMIN_USERNAME' LIMIT 1;" 2>/dev/null | grep -q "$ADMIN_USERNAME"; then
+            admin_exists=true
+        fi
+    fi
+
+    if [[ "$admin_exists" == "true" ]]; then
+        print_info "Admin user '$ADMIN_USERNAME' already exists"
+        read -p "Update $ADMIN_USERNAME user password? (y/N): " -r
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Skipping $ADMIN_USERNAME user password update"
+            return 0
+        fi
+    fi
+
+    print_info "Setting up MariaDB $ADMIN_USERNAME user password..."
+    while true; do
+        read -s -p "Enter MariaDB $ADMIN_USERNAME user password: " ADMIN_PASSWORD
+        echo
+        if [[ ${#ADMIN_PASSWORD} -lt 8 ]]; then
+            print_warning "Password should be at least 8 characters long"
+            continue
+        fi
+
+        read -s -p "Confirm MariaDB $ADMIN_USERNAME user password: " confirm_password
+        echo
+        if [[ "$ADMIN_PASSWORD" == "$confirm_password" ]]; then
+            break
+        else
+            print_warning "Passwords do not match. Please try again."
+        fi
+    done
+    print_success "$ADMIN_USERNAME user password set"
 }
 
 # Function to update package repository
@@ -156,9 +229,8 @@ install_mariadb() {
     # Install packages
     local packages=(
         "mariadb-server"
-        "mariadb-client" 
+        "mariadb-client"
         "mariadb-common"
-        "mariadb-server-core-10.6"
     )
     
     install_packages "${packages[@]}"
@@ -221,8 +293,7 @@ DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 
 -- Update root password if provided
 $(if [[ -n "$ROOT_PASSWORD" ]]; then
-    echo "UPDATE mysql.user SET Password=PASSWORD('$ROOT_PASSWORD') WHERE User='root';"
-    echo "UPDATE mysql.user SET plugin='mysql_native_password' WHERE User='root';"
+    echo "ALTER USER 'root'@'localhost' IDENTIFIED BY '$ROOT_PASSWORD';"
 fi)
 
 -- Reload privilege tables
@@ -240,6 +311,52 @@ EOF
     execute_command "sudo rm -f '$secure_script'" "Cleaning up temporary files"
     
     print_success "MariaDB installation secured"
+}
+
+# Function to create admin user
+create_admin_user() {
+    # Skip if admin password was not set (user chose not to update existing user)
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        print_info "Skipping $ADMIN_USERNAME user creation (no password provided)"
+        return 0
+    fi
+
+    print_info "Creating/updating $ADMIN_USERNAME user with administrative privileges..."
+
+    # Create temporary SQL script for admin user
+    local admin_script="/tmp/mariadb_create_admin.sql"
+
+    cat > "$admin_script" << EOF
+-- Create or update admin user
+CREATE USER IF NOT EXISTS '$ADMIN_USERNAME'@'localhost' IDENTIFIED BY '$ADMIN_PASSWORD';
+CREATE USER IF NOT EXISTS '$ADMIN_USERNAME'@'127.0.0.1' IDENTIFIED BY '$ADMIN_PASSWORD';
+CREATE USER IF NOT EXISTS '$ADMIN_USERNAME'@'::1' IDENTIFIED BY '$ADMIN_PASSWORD';
+
+-- Update password for existing users
+ALTER USER '$ADMIN_USERNAME'@'localhost' IDENTIFIED BY '$ADMIN_PASSWORD';
+ALTER USER '$ADMIN_USERNAME'@'127.0.0.1' IDENTIFIED BY '$ADMIN_PASSWORD';
+ALTER USER '$ADMIN_USERNAME'@'::1' IDENTIFIED BY '$ADMIN_PASSWORD';
+
+-- Grant all privileges to admin user
+GRANT ALL PRIVILEGES ON *.* TO '$ADMIN_USERNAME'@'localhost' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO '$ADMIN_USERNAME'@'127.0.0.1' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO '$ADMIN_USERNAME'@'::1' WITH GRANT OPTION;
+
+-- Reload privilege tables
+FLUSH PRIVILEGES;
+EOF
+
+    # Execute the admin user creation script
+    if [[ -n "$ROOT_PASSWORD" ]]; then
+        execute_command "sudo mysql -u root -p'$ROOT_PASSWORD' < '$admin_script'" "Creating/updating $ADMIN_USERNAME user"
+    else
+        execute_command "sudo mysql -u root < '$admin_script'" "Creating/updating $ADMIN_USERNAME user"
+    fi
+
+    # Clean up temporary script
+    execute_command "sudo rm -f '$admin_script'" "Cleaning up temporary files"
+
+    print_success "$ADMIN_USERNAME user created/updated with full administrative privileges"
 }
 
 # Function to verify installation
@@ -285,42 +402,43 @@ verify_installation() {
 
 # Function to display post-installation information
 show_post_install_info() {
-    cat << EOF
-
-${GREEN}=== MariaDB Installation Complete ===${NC}
-
-MariaDB has been successfully installed and secured.
-
-${BLUE}Service Information:${NC}
-- Service: $MARIADB_SERVICE
-- Status: $(get_service_status "$MARIADB_SERVICE")
-- Config: $MARIADB_CONFIG_TARGET
-
-${BLUE}Connection Information:${NC}
-- Host: localhost (127.0.0.1)
-- Port: 3306
-- Root User: root
-- Socket: /var/run/mysqld/mysqld.sock
-
-${BLUE}Common Commands:${NC}
-- Connect to MariaDB:    sudo mysql -u root -p
-- Service status:        sudo systemctl status $MARIADB_SERVICE
-- Service restart:       sudo systemctl restart $MARIADB_SERVICE
-- Service logs:          sudo journalctl -u $MARIADB_SERVICE
-
-${BLUE}Security Notes:${NC}
-- Anonymous users have been removed
-- Root remote access has been disabled
-- Test database has been removed
-- Root password has been set (if provided)
-
-${YELLOW}Next Steps:${NC}
-1. Create additional database users as needed
-2. Create application databases
-3. Configure firewall rules if needed
-4. Set up regular backups
-
-EOF
+    echo
+    echo -e "${GREEN}=== MariaDB Installation Complete ===${NC}"
+    echo
+    echo "MariaDB has been successfully installed and secured."
+    echo
+    echo -e "${BLUE}Service Information:${NC}"
+    echo "- Service: $MARIADB_SERVICE"
+    echo "- Status: $(get_service_status "$MARIADB_SERVICE")"
+    echo "- Config: $MARIADB_CONFIG_TARGET"
+    echo
+    echo -e "${BLUE}Connection Information:${NC}"
+    echo "- Host: localhost (127.0.0.1)"
+    echo "- Port: 3306"
+    echo "- Root User: root (local access only)"
+    echo "- Admin User: $ADMIN_USERNAME (alternative admin account)"
+    echo "- Socket: /var/run/mysqld/mysqld.sock"
+    echo
+    echo -e "${BLUE}Common Commands:${NC}"
+    echo "- Connect as root:       sudo mysql -u root -p"
+    echo "- Connect as admin:      mysql -u $ADMIN_USERNAME -p"
+    echo "- Service status:        sudo systemctl status $MARIADB_SERVICE"
+    echo "- Service restart:       sudo systemctl restart $MARIADB_SERVICE"
+    echo "- Service logs:          sudo journalctl -u $MARIADB_SERVICE"
+    echo
+    echo -e "${BLUE}Security Notes:${NC}"
+    echo "- Anonymous users have been removed"
+    echo "- Root remote access has been disabled"
+    echo "- Test database has been removed"
+    echo "- Root password has been set (local access only)"
+    echo "- $ADMIN_USERNAME user created as alternative admin account"
+    echo
+    echo -e "${YELLOW}Next Steps:${NC}"
+    echo "1. Create additional database users as needed"
+    echo "2. Create application databases"
+    echo "3. Configure firewall rules if needed"
+    echo "4. Set up regular backups"
+    echo
 }
 
 # Main installation function
@@ -330,11 +448,13 @@ main() {
     parse_arguments "$@"
     validate_prerequisites
     prompt_root_password
+    prompt_admin_user
     update_repository
     install_mariadb
     configure_mariadb
     start_mariadb_service
     secure_mariadb_installation
+    create_admin_user
     
     if verify_installation; then
         show_post_install_info
