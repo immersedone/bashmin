@@ -491,8 +491,20 @@ parse_arguments() {
 check_prerequisites() {
     # Check if running as root
     if [[ $EUID -ne 0 ]]; then
-        print_error "This script must be run as root (use sudo)"
-        exit 1
+        print_warning "This script requires root privileges."
+        if [[ "$FORCE" == true ]]; then
+            print_info "Force mode enabled - attempting to re-run with sudo..."
+            exec sudo -E "$0" "$@"
+        else
+            read -p "Would you like to re-run with sudo? (y/N): " confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                print_info "Re-running with sudo..."
+                exec sudo -E "$0" "$@"
+            else
+                print_error "Root privileges required. Exiting."
+                exit 1
+            fi
+        fi
     fi
 
     # Check if helper files exist
@@ -531,11 +543,14 @@ validate_modules() {
 
 # Main execution
 main() {
+    # Store original arguments for potential sudo re-run
+    local original_args=("$@")
+
     # Parse command line arguments
     parse_arguments "$@"
 
-    # Check prerequisites
-    check_prerequisites
+    # Check prerequisites (pass original args for potential sudo re-run)
+    check_prerequisites "${original_args[@]}"
 
     # Validate modules
     validate_modules
