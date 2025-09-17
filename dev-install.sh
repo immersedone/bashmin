@@ -19,6 +19,7 @@ source "${SCRIPT_DIR}/_helpers/system.sh"
 INSTALLATION_MODE="interactive"  # interactive, quiet, auto
 DRY_RUN=false
 VERBOSE=false
+FORCE=false
 LOG_FILE="/var/log/bashmin/dev-install-$(date +%Y%m%d_%H%M%S).log"
 
 # Ensure log directory exists
@@ -67,6 +68,7 @@ OPTIONS:
     -a, --auto              Automatic mode - install all modules
     -d, --dry-run           Show what would be installed without executing
     -v, --verbose           Enable verbose output
+    -f, --force             Force installation, skip confirmations and overrides
     -l, --log FILE          Custom log file location
     --list-modules          List all development modules
 
@@ -91,6 +93,9 @@ EXAMPLES:
 
     # Automatic installation (all modules)
     sudo ./dev-install.sh --auto
+
+    # Force installation without confirmations
+    sudo ./dev-install.sh --force
 
     # Dry run to see what would be installed
     sudo ./dev-install.sh --dry-run
@@ -338,7 +343,7 @@ install_modules() {
     done
     echo
 
-    if [[ "$INSTALLATION_MODE" == "interactive" ]]; then
+    if [[ "$INSTALLATION_MODE" == "interactive" && "$FORCE" != true ]]; then
         read -p "Proceed with installation? (y/N): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             print_info "Installation cancelled."
@@ -406,6 +411,9 @@ install_module() {
     if [[ "$INSTALLATION_MODE" == "quiet" ]]; then
         install_args+=("--quiet")
     fi
+    if [[ "$FORCE" == true ]]; then
+        install_args+=("--force")
+    fi
 
     # Execute installation script
     {
@@ -451,6 +459,10 @@ parse_arguments() {
                 ;;
             -v|--verbose)
                 VERBOSE=true
+                shift
+                ;;
+            -f|--force)
+                FORCE=true
                 shift
                 ;;
             -l|--log)
