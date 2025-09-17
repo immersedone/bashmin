@@ -79,12 +79,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            show_help
+            show_vhost_help
             exit 0
             ;;
         -*)
             print_error "Unknown option: $1"
-            show_help
+            show_vhost_help
             exit 1
             ;;
         *)
@@ -100,7 +100,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Function to show help
-show_help() {
+show_vhost_help() {
     cat << EOF
 Usage: $0 [OPTIONS] DOMAIN
 
@@ -112,7 +112,7 @@ ARGUMENTS:
 OPTIONS:
     --webroot PATH          Custom webroot path (default: $DEFAULT_WEBROOT/DOMAIN/public)
     --php-version VERSION   PHP version to use (default: $DEFAULT_PHP_VERSION)
-    --port PORT             Port to listen on (default: 8080)
+    --port PORT             Port to listen on (8080-8082, default: 8080)
     --no-ssl                Disable SSL configuration
     --no-directory          Don't create webroot directory
     --no-hosts              Don't update /etc/hosts file
@@ -127,538 +127,208 @@ EXAMPLES:
     $0 api.local --php-version 8.4          # Custom PHP version
     $0 app.local --webroot /custom/path     # Custom webroot
     $0 test.local --port 8081 --no-ssl     # Custom port, no SSL
+    $0 php84.local --port 8082 --php-version 8.4  # PHP 8.4 on port 8082
 
 NOTES:
     - Requires sudo privileges
     - Creates directory structure if needed
     - Updates /etc/hosts with 127.0.0.1 entry
+    - Dynamically adds required ports to Apache2 configuration
     - Enables site automatically
     - Reloads Apache2 configuration
+    - To remove vhost: sudo a2dissite DOMAIN && sudo rm /etc/apache2/sites-available/DOMAIN.conf
 
-EOF
-}
+# Validate domain name
+if [[ -z "$DOMAIN" ]]; then
+    print_error "Domain name is required"
+    show_vhost_help
+    exit 1
+fi
 
-# Function to validate domain name
-validate_domain() {
-    local domain="$1"
-    
-    # Basic domain validation
-    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
-        print_error "Invalid domain name: $domain"
-        print_info "Domain names must contain only letters, numbers, dots, and hyphens"
-        exit 1
-    fi
-    
-    # Check for common mistakes
-    if [[ "$domain" =~ ^https?:// ]]; then
-        print_error "Domain should not include protocol (http/https)"
-        exit 1
-    fi
-    
-    if [[ "$domain" =~ / ]]; then
-        print_error "Domain should not include paths"
-        exit 1
-    fi
-}
+# Validate port range (8080-8082 for 3 latest PHP versions)
+if [[ ! "$PORT" =~ ^808[0-2]$ ]]; then
+    print_error "Invalid port: $PORT"
+    print_info "Port must be in range 8080-8082 (one for each of the 3 latest PHP versions)"
+    exit 1
+fi
 
-# Function to check prerequisites
-check_prerequisites() {
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Checking prerequisites..."
+# Set default webroot if not specified
+if [[ -z "$WEBROOT" ]]; then
+    WEBROOT="$DEFAULT_WEBROOT/$DOMAIN/public"
+fi
+
+# Function to add port to ports.conf if not already present
+add_port_to_config() {
+    local port="$1"
+    local ssl_port="$((port + 363))"  # 8080 -> 8443, 8081 -> 8444, 8082 -> 8445
+
+    # Check if HTTP ports already exist (IPv4 and IPv6 localhost)
+    if ! grep -q "^Listen 127.0.0.1:$port$" /etc/apache2/ports.conf; then
+        sudo sed -i "/^# vim: syntax=apache/i\\Listen 127.0.0.1:$port" /etc/apache2/ports.conf
     fi
-    
-    # Check if running as root or with sudo
-    if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+    if ! grep -q "^Listen \\[::1\\]:$port$" /etc/apache2/ports.conf; then
+        sudo sed -i "/^# vim: syntax=apache/i\\Listen [::1]:$port" /etc/apache2/ports.conf
     fi
-    
-    # Check if Apache is installed
-    if ! command -v apache2 >/dev/null 2>&1; then
-        print_error "Apache2 is not installed"
-        print_info "Run the Apache2 install script first: $PROJECT_ROOT/servers/apache2/install.sh"
-        exit 1
+
+    # Check if SSL ports already exist (IPv4 and IPv6 localhost)
+    if ! grep -q "Listen 127.0.0.1:$ssl_port ssl" /etc/apache2/ports.conf; then
+        sudo sed -i "/<IfModule ssl_module>/a\\\\tListen 127.0.0.1:$ssl_port ssl" /etc/apache2/ports.conf
+        sudo sed -i "/<IfModule mod_gnutls.c>/a\\\\tListen 127.0.0.1:$ssl_port ssl" /etc/apache2/ports.conf
     fi
-    
-    # Check if Apache is running
-    if ! sudo systemctl is-active apache2 >/dev/null 2>&1; then
-        print_warning "Apache2 is not running"
-        if [[ "$DRY_RUN" == false ]] && confirm_action "Start Apache2 service?" "Y"; then
-            sudo systemctl start apache2
-        fi
-    fi
-    
-    # Check if template exists
-    if [[ ! -f "$VHOST_TEMPLATE" ]]; then
-        print_error "Vhost template not found: $VHOST_TEMPLATE"
-        print_info "Make sure the Apache2 installation is complete"
-        exit 1
-    fi
-    
-    # Check if PHP-FPM is available for the specified version
-    local php_socket="/run/php/php${PHP_VERSION}-fpm.sock"
-    if [[ ! -S "$php_socket" ]]; then
-        print_warning "PHP-FPM $PHP_VERSION socket not found: $php_socket"
-        print_info "Make sure PHP $PHP_VERSION FPM is installed and running"
+    if ! grep -q "Listen \\[::1\\]:$ssl_port ssl" /etc/apache2/ports.conf; then
+        sudo sed -i "/<IfModule ssl_module>/a\\\\tListen [::1]:$ssl_port ssl" /etc/apache2/ports.conf
+        sudo sed -i "/<IfModule mod_gnutls.c>/a\\\\tListen [::1]:$ssl_port ssl" /etc/apache2/ports.conf
     fi
 }
 
-# Function to check if site already exists
-check_site_exists() {
-    local domain="$1"
-    local site_config="$APACHE_SITES_AVAILABLE/$domain.conf"
-    
-    if [[ -f "$site_config" && "$FORCE" == false ]]; then
-        print_error "Site configuration already exists: $site_config"
-        print_info "Use --force to overwrite existing configuration"
-        exit 1
-    fi
-    
-    # Check if site is enabled
-    if [[ -L "$APACHE_SITES_ENABLED/$domain.conf" ]]; then
-        if [[ "$FORCE" == false ]]; then
-            print_error "Site is already enabled: $domain"
-            print_info "Use --force to overwrite existing configuration"
-            exit 1
-        else
-            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-                print_info "Disabling existing site: $domain"
-            fi
-            if [[ "$DRY_RUN" == false ]]; then
-                sudo a2dissite "$domain" >/dev/null 2>&1 || true
-            fi
-        fi
+# Function to remove port from ports.conf if no vhosts use it
+remove_port_from_config() {
+    local port="$1"
+    local ssl_port="$((port + 363))"
+
+    # Check if any enabled sites use this port
+    if ! grep -r ":$port>" /etc/apache2/sites-enabled/ >/dev/null 2>&1; then
+        sudo sed -i "/^Listen 127.0.0.1:$port$/d" /etc/apache2/ports.conf
+        sudo sed -i "/^Listen \\[::1\\]:$port$/d" /etc/apache2/ports.conf
+        sudo sed -i "/Listen 127.0.0.1:$ssl_port ssl/d" /etc/apache2/ports.conf
+        sudo sed -i "/Listen \\[::1\\]:$ssl_port ssl/d" /etc/apache2/ports.conf
     fi
 }
 
-# Function to create webroot directory
-create_webroot() {
-    local webroot="$1"
-    local domain="$2"
-    
-    if [[ "$CREATE_DIRECTORY" == false ]]; then
-        return 0
+# Check if running as root or with sudo
+if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+    print_info "This script requires sudo privileges. Please enter your password when prompted."
+    if ! sudo -v; then
+        print_error "Failed to obtain sudo privileges"
+        exit 1
     fi
-    
+fi
+
+# Check if template exists
+if [[ ! -f "$VHOST_TEMPLATE" ]]; then
+    print_error "Vhost template not found: $VHOST_TEMPLATE"
+    exit 1
+fi
+
+# Check if site already exists
+SITE_CONFIG="$APACHE_SITES_AVAILABLE/$DOMAIN.conf"
+if [[ -f "$SITE_CONFIG" && "$FORCE" == false ]]; then
+    print_error "Site configuration already exists: $SITE_CONFIG"
+    print_info "Use --force to overwrite"
+    exit 1
+fi
+
+if [[ "$QUIET" == false ]]; then
+    print_info "Creating Apache2 virtual host for: $DOMAIN"
+fi
+
+# Create webroot directory
+if [[ "$CREATE_DIRECTORY" == true ]]; then
     if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would create directory: $webroot"
-        return 0
-    fi
-    
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Creating webroot directory: $webroot"
-    fi
-    
-    # Create directory structure
-    sudo mkdir -p "$webroot"
-    sudo chown www-data:www-data "$webroot"
-    sudo chmod 755 "$webroot"
-    
-    # Create parent directory with proper permissions
-    local parent_dir=$(dirname "$webroot")
-    if [[ "$parent_dir" == "$DEFAULT_WEBROOT/$domain" ]]; then
-        sudo chown www-data:www-data "$parent_dir"
-        sudo chmod 755 "$parent_dir"
-    fi
-    
-    # Create basic index.php if it doesn't exist
-    if [[ ! -f "$webroot/index.php" ]]; then
+        echo "[DRY-RUN] Would create directory: $WEBROOT"
+    else
         if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_info "Creating default index.php file"
+            print_info "Creating webroot directory: $WEBROOT"
         fi
-        
-        sudo tee "$webroot/index.php" > /dev/null << EOF
+        sudo mkdir -p "$WEBROOT"
+        sudo chown www-data:www-data "$WEBROOT"
+        sudo chmod 755 "$WEBROOT"
+
+        # Create basic index.php if it doesn't exist
+        if [[ ! -f "$WEBROOT/index.php" ]]; then
+            sudo tee "$WEBROOT/index.php" > /dev/null << INDEXEOF
 <?php
-/**
- * Default index page for $domain
- * Generated by bashmin Apache2 vhost script
- */
-
-// Prevent direct access to this file in production
-if (isset(\$_GET['info']) && \$_GET['info'] === 'php') {
-    phpinfo();
-    exit;
-}
+echo "<h1>Welcome to $DOMAIN</h1>";
+echo "<p>Server: " . \$_SERVER['SERVER_NAME'] . "</p>";
+echo "<p>PHP Version: " . phpversion() . "</p>";
+echo "<p>Document Root: " . \$_SERVER['DOCUMENT_ROOT'] . "</p>";
+echo "<p>Current Time: " . date('Y-m-d H:i:s') . "</p>";
+phpinfo();
 ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to <?= htmlspecialchars('$domain') ?></title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-               line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 2rem; }
-        .header { background: #f8f9fa; padding: 2rem; border-radius: 8px; margin-bottom: 2rem; }
-        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
-        .info-card { background: #fff; border: 1px solid #dee2e6; padding: 1rem; border-radius: 6px; }
-        .info-card h3 { margin-top: 0; color: #495057; }
-        .success { color: #28a745; }
-        .warning { color: #ffc107; }
-        code { background: #f8f9fa; padding: 0.2rem 0.4rem; border-radius: 3px; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1 class="success">🚀 Welcome to <?= htmlspecialchars('$domain') ?></h1>
-        <p>Your Apache2 virtual host is configured and running successfully!</p>
-    </div>
-
-    <div class="info-grid">
-        <div class="info-card">
-            <h3>Server Information</h3>
-            <p><strong>Domain:</strong> <?= htmlspecialchars(\$_SERVER['SERVER_NAME'] ?? 'Unknown') ?></p>
-            <p><strong>Server IP:</strong> <?= htmlspecialchars(\$_SERVER['SERVER_ADDR'] ?? 'Unknown') ?></p>
-            <p><strong>Port:</strong> <?= htmlspecialchars(\$_SERVER['SERVER_PORT'] ?? 'Unknown') ?></p>
-            <p><strong>Protocol:</strong> <?= htmlspecialchars(\$_SERVER['SERVER_PROTOCOL'] ?? 'Unknown') ?></p>
-        </div>
-
-        <div class="info-card">
-            <h3>PHP Information</h3>
-            <p><strong>PHP Version:</strong> <?= phpversion() ?></p>
-            <p><strong>PHP SAPI:</strong> <?= php_sapi_name() ?></p>
-            <p><strong>Memory Limit:</strong> <?= ini_get('memory_limit') ?></p>
-            <p><strong>Max Execution Time:</strong> <?= ini_get('max_execution_time') ?>s</p>
-        </div>
-
-        <div class="info-card">
-            <h3>Document Root</h3>
-            <p><strong>Path:</strong> <code><?= htmlspecialchars(\$_SERVER['DOCUMENT_ROOT'] ?? 'Unknown') ?></code></p>
-            <p><strong>Script:</strong> <code><?= htmlspecialchars(\$_SERVER['SCRIPT_FILENAME'] ?? 'Unknown') ?></code></p>
-        </div>
-
-        <div class="info-card">
-            <h3>Request Information</h3>
-            <p><strong>Method:</strong> <?= htmlspecialchars(\$_SERVER['REQUEST_METHOD'] ?? 'Unknown') ?></p>
-            <p><strong>URI:</strong> <?= htmlspecialchars(\$_SERVER['REQUEST_URI'] ?? 'Unknown') ?></p>
-            <p><strong>User Agent:</strong> <?= htmlspecialchars(substr(\$_SERVER['HTTP_USER_AGENT'] ?? 'Unknown', 0, 50)) ?>...</p>
-            <p><strong>Remote IP:</strong> <?= htmlspecialchars(\$_SERVER['REMOTE_ADDR'] ?? 'Unknown') ?></p>
-        </div>
-    </div>
-
-    <div style="margin-top: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 6px;">
-        <h3>Quick Links</h3>
-        <ul>
-            <li><a href="?info=php">View PHP Info</a> (detailed PHP configuration)</li>
-            <li><a href="/server-status">Server Status</a> (if mod_status is enabled)</li>
-            <li><a href="/server-info">Server Info</a> (if mod_info is enabled)</li>
-        </ul>
-
-        <h3>Next Steps</h3>
-        <ol>
-            <li>Replace this file with your application code</li>
-            <li>Configure your database connections</li>
-            <li>Set up SSL certificates if needed</li>
-            <li>Configure any additional Apache modules</li>
-        </ol>
-
-        <p><small>Generated on <?= date('Y-m-d H:i:s') ?> by bashmin Apache2 vhost script</small></p>
-    </div>
-</body>
-</html>
-EOF
-        
-        sudo chown www-data:www-data "$webroot/index.php"
-        sudo chmod 644 "$webroot/index.php"
+INDEXEOF
+            sudo chown www-data:www-data "$WEBROOT/index.php"
+        fi
     fi
-}
+fi
 
-# Function to create site configuration
-create_site_config() {
-    local domain="$1"
-    local webroot="$2"
-    local php_version="$3"
-    local port="$4"
-    
-    local site_config="$APACHE_SITES_AVAILABLE/$domain.conf"
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would create site configuration: $site_config"
-        return 0
-    fi
-    
+# Create site configuration from template
+if [[ "$DRY_RUN" == true ]]; then
+    echo "[DRY-RUN] Would create site configuration: $SITE_CONFIG"
+else
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Creating site configuration: $site_config"
+        print_info "Creating site configuration: $SITE_CONFIG"
     fi
-    
+
     # Generate configuration from template
-    sudo cp "$VHOST_TEMPLATE" "$site_config"
-    
-    # Replace placeholders in the configuration
-    sudo sed -i "s|{DOMAIN_NAME}|$domain|g" "$site_config"
-    sudo sed -i "s|{PORT}|$port|g" "$site_config"
-    sudo sed -i "s|{DOCUMENT_ROOT}|$webroot|g" "$site_config"
-    sudo sed -i "s|{PHP_VERSION}|$php_version|g" "$site_config"
-    sudo sed -i "s|127.0.0.1:8080|127.0.0.1:$port|g" "$site_config"
-    
-    # Set default server admin if not specified
-    local server_admin="admin@$domain"
-    sudo sed -i "s|admin@{DOMAIN_NAME}|$server_admin|g" "$site_config"
-    
-    # Update file header with current information
-    sudo sed -i "s|File: vhost.config.example|File: $domain.conf|g" "$site_config"
-    sudo sed -i "s|Last Modified: bashmin (29/07/2025)|Last Modified: bashmin ($(date '+%d/%m/%Y'))|g" "$site_config"
-    
-    # Add custom error pages if enabled
-    if [[ "$ENABLE_SSL" == true ]]; then
-        # Add SSL-related configurations (placeholder for future SSL support)
-        sudo sed -i '/CustomLog.*combined/a\\n    # SSL Configuration (placeholder)\n    # SSLEngine on\n    # SSLCertificateFile /etc/ssl/certs/'$domain'.crt\n    # SSLCertificateKeyFile /etc/ssl/private/'$domain'.key' "$site_config"
-    fi
-    
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_success "Site configuration created: $site_config"
-    fi
-}
+    sudo cp "$VHOST_TEMPLATE" "$SITE_CONFIG"
 
-# Function to enable site
-enable_site() {
-    local domain="$1"
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would enable site: $domain"
-        return 0
-    fi
-    
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Enabling site: $domain"
-    fi
-    
-    if sudo a2ensite "$domain" >/dev/null 2>&1; then
-        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_success "Site enabled: $domain"
-        fi
-    else
-        print_error "Failed to enable site: $domain"
-        exit 1
-    fi
-}
+    # Replace placeholders
+    sudo sed -i "s|ServerName php74.ti|ServerName $DOMAIN|g" "$SITE_CONFIG"
+    sudo sed -i "s|127.0.0.1:8080|127.0.0.1:$PORT|g" "$SITE_CONFIG"
+    sudo sed -i "s|/var/www/vhosts/php83-test/public|$WEBROOT|g" "$SITE_CONFIG"
+    sudo sed -i "s|php8.3-fpm.sock|php${PHP_VERSION}-fpm.sock|g" "$SITE_CONFIG"
+    sudo sed -i "s|php83.ti|$DOMAIN|g" "$SITE_CONFIG"
 
-# Function to update hosts file
-update_hosts_file() {
-    local domain="$1"
-    
-    if [[ "$UPDATE_HOSTS" == false ]]; then
-        return 0
-    fi
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would update /etc/hosts with: 127.0.0.1 $domain"
-        return 0
-    fi
-    
-    # Use bashmin hosts script if available
+    # Add port to ports.conf if needed
+    add_port_to_config "$PORT"
+
+    # Enable the site
+    sudo a2ensite "$DOMAIN" >/dev/null 2>&1
+fi
+
+# Update hosts file
+if [[ "$UPDATE_HOSTS" == true ]]; then
     if [[ -x "$PROJECT_ROOT/hosts/update-hosts.sh" ]]; then
-        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_info "Updating /etc/hosts file..."
-        fi
-        
-        if "$PROJECT_ROOT/hosts/update-hosts.sh" --quiet add 127.0.0.1 "$domain"; then
-            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-                print_success "Hosts file updated"
-            fi
+        if [[ "$DRY_RUN" == true ]]; then
+            echo "[DRY-RUN] Would update /etc/hosts with: 127.0.0.1 $DOMAIN"
         else
-            print_warning "Failed to update hosts file automatically"
+            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+                print_info "Updating /etc/hosts file..."
+            fi
+            "$PROJECT_ROOT/hosts/update-hosts.sh" --quiet add 127.0.0.1 "$DOMAIN"
         fi
     else
-        # Fallback manual method
-        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_info "Adding entry to /etc/hosts manually..."
-        fi
-        
-        if ! grep -q "127.0.0.1.*$domain" /etc/hosts; then
-            echo "127.0.0.1    $domain" | sudo tee -a /etc/hosts >/dev/null
-            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-                print_success "Added to /etc/hosts: 127.0.0.1 $domain"
-            fi
-        else
-            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-                print_info "Entry already exists in /etc/hosts"
-            fi
-        fi
+        print_warning "Hosts update script not found, skipping hosts file update"
     fi
-}
+fi
 
-# Function to test Apache configuration
-test_apache_config() {
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would test Apache configuration"
-        return 0
-    fi
-    
+# Test Apache configuration
+if [[ "$DRY_RUN" == false ]]; then
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_info "Testing Apache configuration..."
     fi
-    
-    if sudo apache2ctl -t >/dev/null 2>&1; then
-        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_success "Apache configuration test passed"
-        fi
-        return 0
-    else
-        print_error "Apache configuration test failed"
-        
-        # Show the actual error
-        if [[ "$VERBOSE" == true ]]; then
-            print_info "Configuration errors:"
-            sudo apache2ctl -t 2>&1 | head -10
-        fi
-        
-        return 1
-    fi
-}
 
-# Function to reload Apache
-reload_apache() {
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would reload Apache2"
-        return 0
+    if ! sudo apache2ctl -t >/dev/null 2>&1; then
+        print_error "Apache configuration test failed"
+        print_info "Rolling back changes..."
+        sudo a2dissite "$DOMAIN" >/dev/null 2>&1 || true
+        sudo rm -f "$SITE_CONFIG"
+        remove_port_from_config "$PORT"
+        exit 1
     fi
-    
+
+    # Reload Apache
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_info "Reloading Apache2..."
     fi
-    
-    if sudo systemctl reload apache2; then
-        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_success "Apache2 reloaded successfully"
-        fi
-    else
-        print_error "Failed to reload Apache2"
-        exit 1
-    fi
-}
+    sudo systemctl reload apache2
+fi
 
-# Function to show completion summary
-show_completion_summary() {
-    if [[ "$QUIET" == true || "$DRY_RUN" == true ]]; then
-        return 0
-    fi
-    
-    local url_protocol="http"
-    local url_port=""
-    
-    if [[ "$PORT" != "80" ]]; then
-        url_port=":$PORT"
-    fi
-    
+if [[ "$QUIET" == false ]]; then
     echo
     print_success "Virtual host created successfully! 🚀"
     echo
     print_info "=== Virtual Host Details ==="
-    cat << EOF
-Domain:         $DOMAIN
-Webroot:        $WEBROOT
-PHP Version:    $PHP_VERSION
-Port:           $PORT
-Config File:    $APACHE_SITES_AVAILABLE/$DOMAIN.conf
-Log Files:      /var/log/apache2/$DOMAIN-*.log
-
-EOF
-    
-    print_info "=== Quick Access ==="
-    cat << EOF
-Website URL:    $url_protocol://$DOMAIN$url_port
-Test Page:      $url_protocol://$DOMAIN$url_port/
-PHP Info:       $url_protocol://$DOMAIN$url_port/?info=php
-
-EOF
-    
-    print_info "=== Management Commands ==="
-    cat << EOF
-View logs:      sudo tail -f /var/log/apache2/$DOMAIN-*.log
-Edit config:    sudo nano $APACHE_SITES_AVAILABLE/$DOMAIN.conf
-Disable site:   sudo a2dissite $DOMAIN && sudo systemctl reload apache2
-Test config:    sudo apache2ctl -t
-Reload Apache:  sudo systemctl reload apache2
-
-EOF
-    
+    echo "Domain:       $DOMAIN"
+    echo "Port:         $PORT"
+    echo "Webroot:      $WEBROOT"
+    echo "PHP Version:  $PHP_VERSION"
+    echo "Config File:  $SITE_CONFIG"
+    echo
     print_info "=== Next Steps ==="
-    cat << EOF
-1. Visit your site: $url_protocol://$DOMAIN$url_port
-2. Upload your application files to: $WEBROOT
-3. Configure database connections as needed
-4. Set up SSL certificates for production use
-
-EOF
-    
-    print_info "🎉 Your virtual host is ready to use!"
-}
-
-# Main function
-main() {
-    # Validate domain name
-    if [[ -z "$DOMAIN" ]]; then
-        print_error "Domain name is required"
-        show_help
-        exit 1
-    fi
-    
-    validate_domain "$DOMAIN"
-    
-    # Set default webroot if not specified
-    if [[ -z "$WEBROOT" ]]; then
-        WEBROOT="$DEFAULT_WEBROOT/$DOMAIN/public"
-    fi
-    
-    if [[ "$QUIET" == false ]]; then
-        show_script_header "Apache2 Virtual Host Creator"
-        print_info "Creating virtual host for: $DOMAIN"
-    fi
-    
-    # Check prerequisites
-    check_prerequisites
-    
-    # Check if site already exists
-    check_site_exists "$DOMAIN"
-    
-    # Show creation plan
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Virtual host creation plan:"
-        print_info "  Domain: $DOMAIN"
-        print_info "  Webroot: $WEBROOT"
-        print_info "  PHP Version: $PHP_VERSION"
-        print_info "  Port: $PORT"
-        print_info "  Create Directory: $CREATE_DIRECTORY"
-        print_info "  Update Hosts: $UPDATE_HOSTS"
-        
-        if [[ "$DRY_RUN" == false ]] && ! confirm_action "Proceed with virtual host creation?" "Y"; then
-            print_info "Virtual host creation cancelled"
-            exit 0
-        fi
-    fi
-    
-    # Create webroot directory
-    create_webroot "$WEBROOT" "$DOMAIN"
-    
-    # Create site configuration
-    create_site_config "$DOMAIN" "$WEBROOT" "$PHP_VERSION" "$PORT"
-    
-    # Enable the site
-    enable_site "$DOMAIN"
-    
-    # Update hosts file
-    update_hosts_file "$DOMAIN"
-    
-    # Test Apache configuration
-    if ! test_apache_config; then
-        print_error "Configuration test failed, rolling back changes..."
-        
-        # Rollback changes
-        if [[ "$DRY_RUN" == false ]]; then
-            sudo a2dissite "$DOMAIN" >/dev/null 2>&1 || true
-            sudo rm -f "$APACHE_SITES_AVAILABLE/$DOMAIN.conf"
-        fi
-        
-        exit 1
-    fi
-    
-    # Reload Apache
-    reload_apache
-    
-    # Show completion summary
-    show_completion_summary
-}
-
-# Run main function
-main "$@"
+    echo "• Visit: http://$DOMAIN:$PORT"
+    echo "• Check logs: tail -f /var/log/apache2/$DOMAIN-*.log"
+    echo "• Edit config: sudo nano $SITE_CONFIG"
+    echo "• Disable site: sudo a2dissite $DOMAIN"
+    echo
+fi

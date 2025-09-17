@@ -146,8 +146,11 @@ check_prerequisites() {
     if [[ $EUID -eq 0 ]]; then
         print_warning "Running as root. This is not recommended for security reasons."
     elif ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+        print_info "This script requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
     # Check Ubuntu/Debian system

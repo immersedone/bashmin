@@ -25,6 +25,8 @@ readonly DEFAULT_PHP_VERSION="8.3"
 DOMAIN=""
 DOCUMENT_ROOT=""
 PHP_VERSION=""
+HTTP_PORT="8100"
+HTTPS_PORT="8143"
 ENABLE_SSL=false
 SSL_EMAIL=""
 TEMPLATE_TYPE="php"
@@ -46,6 +48,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --php-version)
             PHP_VERSION="$2"
+            shift 2
+            ;;
+        --http-port)
+            HTTP_PORT="$2"
+            shift 2
+            ;;
+        --https-port)
+            HTTPS_PORT="$2"
             shift 2
             ;;
         --ssl)
@@ -113,6 +123,8 @@ OPTIONS:
     -d, --domain DOMAIN     Domain name (alternative to positional arg)
     -r, --root PATH         Custom document root path
     --php-version VERSION   PHP version to use (default: $DEFAULT_PHP_VERSION)
+    --http-port PORT        HTTP port (default: 8100, range: 8100-8199)
+    --https-port PORT       HTTPS port (default: 8143, range: 8100-8199)
     --ssl                   Enable SSL/TLS with Let's Encrypt
     --ssl-email EMAIL       Email for Let's Encrypt SSL certificate
     --template TYPE         Virtual host template: php, static, proxy (default: php)
@@ -168,6 +180,26 @@ validate_domain() {
     fi
     
     print_success "Domain validation passed: $DOMAIN"
+
+    # Validate port ranges (8100-8199)
+    if [[ ! "$HTTP_PORT" =~ ^81[0-9]{2}$ ]]; then
+        print_error "Invalid HTTP port: $HTTP_PORT"
+        print_info "HTTP port must be in range 8100-8199"
+        exit 1
+    fi
+
+    if [[ "$ENABLE_SSL" == true ]] && [[ ! "$HTTPS_PORT" =~ ^81[0-9]{2}$ ]]; then
+        print_error "Invalid HTTPS port: $HTTPS_PORT"
+        print_info "HTTPS port must be in range 8100-8199"
+        exit 1
+    fi
+
+    if [[ "$HTTP_PORT" == "$HTTPS_PORT" ]]; then
+        print_error "HTTP and HTTPS ports cannot be the same"
+        exit 1
+    fi
+
+    print_success "Port configuration validated: HTTP=$HTTP_PORT, HTTPS=$HTTPS_PORT"
 }
 
 # Function to check prerequisites
@@ -178,8 +210,11 @@ check_prerequisites() {
     if [[ $EUID -eq 0 ]]; then
         print_warning "Running as root"
     elif ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+        print_info "This script requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
     # Check if FrankenPHP is installed
@@ -415,8 +450,10 @@ generate_php_vhost_config() {
 # Virtual Host: $DOMAIN
 # Created: $(date)
 # Type: PHP Application
+# Ports: HTTP=$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", HTTPS=$HTTPS_PORT"; fi)
 
-$DOMAIN {
+127.0.0.1:$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", 127.0.0.1:$HTTPS_PORT"; fi) {
+	bind 127.0.0.1
 $(if [[ "$ENABLE_SSL" == true ]]; then echo "    $ssl_config"; fi)
     
     # Document root
@@ -469,6 +506,61 @@ fi)
     respond @sensitive 403
 }
 
+# IPv6 localhost support
+[::1]:$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", [::1]:$HTTPS_PORT"; fi) {
+	bind ::1
+$(if [[ "$ENABLE_SSL" == true ]]; then echo "    $ssl_config"; fi)
+
+    # Document root
+    root * $DOCUMENT_ROOT/public
+
+    # PHP handling with FrankenPHP
+    php_server
+
+    # File server for static assets
+    file_server
+
+    # Logging
+    log {
+        output file $DOCUMENT_ROOT/logs/ipv6-access.log
+        format single_field common_log
+    }
+
+    # Error handling
+    handle_errors {
+        @4xx expression {http.error.status_code} >= 400 && {http.error.status_code} < 500
+        @5xx expression {http.error.status_code} >= 500 && {http.error.status_code} < 600
+
+        rewrite @4xx /error/4xx.html
+        rewrite @5xx /error/5xx.html
+        file_server
+    }
+
+    # Security headers
+    header {
+        # Remove server information
+        -Server
+
+        # Security headers
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy strict-origin-when-cross-origin
+
+$(if [[ "$ENABLE_SSL" == true ]]; then cat <<EOL
+        # HTTPS security headers
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+EOL
+fi)
+    }
+
+    # Deny access to sensitive files
+    @sensitive {
+        path /.env* /config/* /.git/* /vendor/* /composer.* /package.* /webpack.* /gulpfile.* /Gruntfile.*
+    }
+    respond @sensitive 403
+}
+
 # Redirect www to non-www (optional)
 www.$DOMAIN {
 $(if [[ "$ENABLE_SSL" == true ]]; then echo "    $ssl_config"; fi)
@@ -490,8 +582,10 @@ generate_static_vhost_config() {
 # Virtual Host: $DOMAIN
 # Created: $(date)
 # Type: Static File Server
+# Ports: HTTP=$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", HTTPS=$HTTPS_PORT"; fi)
 
-$DOMAIN {
+127.0.0.1:$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", 127.0.0.1:$HTTPS_PORT"; fi) {
+	bind 127.0.0.1
 $(if [[ "$ENABLE_SSL" == true ]]; then echo "    $ssl_config"; fi)
     
     # Document root
@@ -562,8 +656,10 @@ generate_proxy_vhost_config() {
 # Virtual Host: $DOMAIN
 # Created: $(date)
 # Type: Reverse Proxy
+# Ports: HTTP=$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", HTTPS=$HTTPS_PORT"; fi)
 
-$DOMAIN {
+127.0.0.1:$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", 127.0.0.1:$HTTPS_PORT"; fi) {
+	bind 127.0.0.1
 $(if [[ "$ENABLE_SSL" == true ]]; then echo "    $ssl_config"; fi)
     
     # Reverse proxy to backend

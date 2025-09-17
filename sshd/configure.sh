@@ -37,13 +37,15 @@ ALLOWED_USERS=()
 DENIED_USERS=()
 ALLOWED_GROUPS=()
 DENIED_GROUPS=()
+PASSWORD_AUTH_USERS=()
+PASSWORD_AUTH_GROUPS=()
 ENABLE_X11_FORWARDING=false
 ENABLE_AGENT_FORWARDING=false
 ENABLE_TCP_FORWARDING=false
 ENABLE_BANNER=true
 LOG_LEVEL="VERBOSE"
-CLIENT_ALIVE_INTERVAL="300"
-CLIENT_ALIVE_COUNT_MAX="2"
+CLIENT_ALIVE_INTERVAL="600"
+CLIENT_ALIVE_COUNT_MAX="3"
 LOGIN_GRACE_TIME="60"
 PERMIT_TUNNEL=false
 ENABLE_COMPRESSION=false
@@ -104,6 +106,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --deny-groups)
             IFS=',' read -ra DENIED_GROUPS <<< "$2"
+            shift 2
+            ;;
+        --password-auth-users)
+            IFS=',' read -ra PASSWORD_AUTH_USERS <<< "$2"
+            shift 2
+            ;;
+        --password-auth-groups)
+            IFS=',' read -ra PASSWORD_AUTH_GROUPS <<< "$2"
             shift 2
             ;;
         --enable-x11)
@@ -208,12 +218,12 @@ Configure OpenSSH daemon with security hardening and bashmin integration.
 CONNECTION OPTIONS:
     --port PORT                 SSH port number (default: $DEFAULT_SSH_PORT)
     --allow-root MODE           Root login mode: yes, no, prohibit-password (default: no)
-    --client-alive-interval SEC Keep-alive interval in seconds (default: 300)
-    --client-alive-count MAX    Max keep-alive count before disconnect (default: 2)
+    --client-alive-interval SEC Keep-alive interval in seconds (default: 600)
+    --client-alive-count MAX    Max keep-alive count before disconnect (default: 3)
     --login-grace-time SEC      Grace time for authentication in seconds (default: 60)
 
 AUTHENTICATION OPTIONS:
-    --allow-password            Allow password authentication (default: disabled)
+    --allow-password            Allow password authentication globally (default: disabled, use specific user/group options instead)
     --deny-empty-passwords      Explicitly deny empty passwords (default: enabled)
     --disable-pubkey            Disable public key authentication
     --max-auth-tries NUM        Maximum authentication attempts (default: $DEFAULT_MAX_AUTH_TRIES)
@@ -224,6 +234,8 @@ ACCESS CONTROL:
     --deny-users USERS          Comma-separated list of denied users
     --allow-groups GROUPS       Comma-separated list of allowed groups
     --deny-groups GROUPS        Comma-separated list of denied groups
+    --password-auth-users USERS Comma-separated list of users allowed password auth (others use pubkey only)
+    --password-auth-groups GROUPS Comma-separated list of groups allowed password auth (others use pubkey only)
 
 FORWARDING & TUNNELING:
     --enable-x11                Enable X11 forwarding (default: disabled)
@@ -264,8 +276,11 @@ EXAMPLES:
     # Production server with strict access control
     $0 --port 2222 --allow-users admin --deny-users root --max-auth-tries 2
 
-    # Development server with some convenience features
-    $0 --allow-password --enable-x11 --allow-users dev,test
+    # Development server with password auth for specific users
+    $0 --password-auth-users dev,test --enable-x11 --allow-users dev,test
+
+    # Allow password auth for developers group only
+    $0 --password-auth-groups developers --allow-groups developers,admins
 
     # High-security configuration with custom crypto
     $0 --port 2222 --ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com \
@@ -273,6 +288,7 @@ EXAMPLES:
 
 NOTES:
     - Requires sudo privileges
+    - Automatically installs OpenSSH server if not present
     - Automatically tests configuration before applying
     - Creates backup of existing configuration (unless --no-backup)
     - Restarts SSH service after successful configuration
@@ -315,6 +331,65 @@ detect_system() {
     fi
 }
 
+# Function to install OpenSSH server
+install_openssh_server() {
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would install OpenSSH server with: sudo apt install -y openssh-server"
+        echo "[DRY-RUN] Would enable and start SSH service"
+        return 0
+    fi
+
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Installing OpenSSH server..."
+    fi
+
+    # Check if running as root or with sudo
+    if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+        print_info "This installation requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
+    fi
+
+    # Update package lists
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Updating package lists..."
+    fi
+
+    if ! sudo apt update -qq; then
+        print_error "Failed to update package lists"
+        exit 1
+    fi
+
+    # Install OpenSSH server
+    print_info "Installing openssh-server package..."
+
+    if sudo apt install -y openssh-server; then
+        print_success "OpenSSH server installed successfully"
+
+        # Enable and start the service
+        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+            print_info "Enabling and starting SSH service..."
+        fi
+
+        sudo systemctl enable ssh >/dev/null 2>&1
+        sudo systemctl start ssh >/dev/null 2>&1
+
+        # Verify installation
+        if command -v sshd >/dev/null 2>&1; then
+            print_success "OpenSSH server is now ready for configuration"
+        else
+            print_error "OpenSSH server installation verification failed"
+            exit 1
+        fi
+    else
+        print_error "Failed to install OpenSSH server"
+        print_info "Try installing manually with: sudo apt-get install openssh-server"
+        exit 1
+    fi
+}
+
 # Function to check prerequisites
 check_prerequisites() {
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
@@ -323,15 +398,26 @@ check_prerequisites() {
     
     # Check if running as root or with sudo
     if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+        print_info "This script requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
     # Check if OpenSSH server is installed
     if ! command -v sshd >/dev/null 2>&1; then
-        print_error "OpenSSH server is not installed"
-        print_info "Install with: sudo apt-get install openssh-server"
-        exit 1
+        print_warning "OpenSSH server is not installed"
+        if [[ "$DRY_RUN" == true ]]; then
+            print_info "[DRY-RUN] Would prompt to install OpenSSH server"
+            print_info "[DRY-RUN] Install command: sudo apt-get install openssh-server"
+        elif confirm_action "Install OpenSSH server now?" "Y"; then
+            install_openssh_server
+        else
+            print_info "OpenSSH server installation cancelled"
+            print_info "Install manually with: sudo apt-get install openssh-server"
+            exit 1
+        fi
     fi
     
     # Check if SSH service exists
@@ -468,6 +554,9 @@ configure_from_bashmin_template() {
         denied_groups_list=$(IFS=' '; echo "${DENIED_GROUPS[*]}")
         echo "DenyGroups $denied_groups_list" | sudo tee -a "$SSHD_CONFIG" >/dev/null
     fi
+
+    # Add Match blocks for password authentication even when using bashmin template
+    apply_password_auth_match_blocks
 }
 
 # Function to configure custom settings
@@ -566,23 +655,61 @@ apply_access_control_settings() {
         users_list=$(IFS=' '; echo "${ALLOWED_USERS[*]}")
         echo "AllowUsers $users_list" | sudo tee -a "$SSHD_CONFIG" >/dev/null
     fi
-    
+
     if [[ ${#DENIED_USERS[@]} -gt 0 ]]; then
         local users_list
         users_list=$(IFS=' '; echo "${DENIED_USERS[*]}")
         echo "DenyUsers $users_list" | sudo tee -a "$SSHD_CONFIG" >/dev/null
     fi
-    
+
     if [[ ${#ALLOWED_GROUPS[@]} -gt 0 ]]; then
         local groups_list
         groups_list=$(IFS=' '; echo "${ALLOWED_GROUPS[*]}")
         echo "AllowGroups $groups_list" | sudo tee -a "$SSHD_CONFIG" >/dev/null
     fi
-    
+
     if [[ ${#DENIED_GROUPS[@]} -gt 0 ]]; then
         local groups_list
         groups_list=$(IFS=' '; echo "${DENIED_GROUPS[*]}")
         echo "DenyGroups $groups_list" | sudo tee -a "$SSHD_CONFIG" >/dev/null
+    fi
+
+    # Add Match blocks for users/groups that need password authentication
+    apply_password_auth_match_blocks
+}
+
+# Function to apply Match blocks for password authentication
+apply_password_auth_match_blocks() {
+    # Add Match blocks for users that need password authentication
+    if [[ ${#PASSWORD_AUTH_USERS[@]} -gt 0 ]]; then
+        echo "" | sudo tee -a "$SSHD_CONFIG" >/dev/null
+        echo "# Match blocks for users requiring password authentication" | sudo tee -a "$SSHD_CONFIG" >/dev/null
+        for user in "${PASSWORD_AUTH_USERS[@]}"; do
+            cat << EOF | sudo tee -a "$SSHD_CONFIG" >/dev/null
+Match User $user
+    PasswordAuthentication yes
+    PubkeyAuthentication yes
+    AuthenticationMethods publickey,password
+
+EOF
+        done
+    fi
+
+    # Add Match blocks for groups that need password authentication
+    if [[ ${#PASSWORD_AUTH_GROUPS[@]} -gt 0 ]]; then
+        if [[ ${#PASSWORD_AUTH_USERS[@]} -eq 0 ]]; then
+            echo "" | sudo tee -a "$SSHD_CONFIG" >/dev/null
+            echo "# Match blocks for groups requiring password authentication" | sudo tee -a "$SSHD_CONFIG" >/dev/null
+        fi
+        for group in "${PASSWORD_AUTH_GROUPS[@]}"; do
+            cat << EOF | sudo tee -a "$SSHD_CONFIG" >/dev/null
+Match Group $group
+    PasswordAuthentication yes
+    PubkeyAuthentication yes
+    AuthenticationMethods publickey,password
+
+EOF
+        done
     fi
 }
 
@@ -759,9 +886,11 @@ Client Alive:        ${CLIENT_ALIVE_INTERVAL}s (max $CLIENT_ALIVE_COUNT_MAX)
 
 EOF
 
-    if [[ ${#ALLOWED_USERS[@]} -gt 0 ]]; then
+    if [[ ${#ALLOWED_USERS[@]} -gt 0 ]] || [[ ${#PASSWORD_AUTH_USERS[@]} -gt 0 ]] || [[ ${#PASSWORD_AUTH_GROUPS[@]} -gt 0 ]]; then
         print_info "=== Access Control ==="
-        echo "Allowed Users:       ${ALLOWED_USERS[*]}"
+        if [[ ${#ALLOWED_USERS[@]} -gt 0 ]]; then
+            echo "Allowed Users:       ${ALLOWED_USERS[*]}"
+        fi
         if [[ ${#DENIED_USERS[@]} -gt 0 ]]; then
             echo "Denied Users:        ${DENIED_USERS[*]}"
         fi
@@ -770,6 +899,12 @@ EOF
         fi
         if [[ ${#DENIED_GROUPS[@]} -gt 0 ]]; then
             echo "Denied Groups:       ${DENIED_GROUPS[*]}"
+        fi
+        if [[ ${#PASSWORD_AUTH_USERS[@]} -gt 0 ]]; then
+            echo "Password Auth Users: ${PASSWORD_AUTH_USERS[*]}"
+        fi
+        if [[ ${#PASSWORD_AUTH_GROUPS[@]} -gt 0 ]]; then
+            echo "Password Auth Groups: ${PASSWORD_AUTH_GROUPS[*]}"
         fi
         echo
     fi
@@ -847,6 +982,8 @@ main() {
         print_info "  Max Auth Tries: $MAX_AUTH_TRIES"
         print_info "  Use Bashmin Config: $(bool_to_yes_no $USE_BASHMIN_CONFIG)"
         [[ ${#ALLOWED_USERS[@]} -gt 0 ]] && print_info "  Allowed Users: ${ALLOWED_USERS[*]}"
+        [[ ${#PASSWORD_AUTH_USERS[@]} -gt 0 ]] && print_info "  Password Auth Users: ${PASSWORD_AUTH_USERS[*]}"
+        [[ ${#PASSWORD_AUTH_GROUPS[@]} -gt 0 ]] && print_info "  Password Auth Groups: ${PASSWORD_AUTH_GROUPS[*]}"
         
         if [[ "$DRY_RUN" == false ]] && ! confirm_action "Proceed with SSH configuration?" "Y"; then
             print_info "SSH configuration cancelled"

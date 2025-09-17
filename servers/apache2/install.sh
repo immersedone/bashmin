@@ -166,8 +166,11 @@ check_prerequisites() {
     
     # Check if running as root or with sudo
     if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+        print_info "This script requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
     # Check OS compatibility
@@ -338,6 +341,63 @@ install_system_configs() {
         sudo mv "$APACHE_CONF_DIR/apache2.conf" "$APACHE_CONF_DIR/apache2.conf.backup" 2>/dev/null || true
         sudo mv "$APACHE_CONF_DIR/apache2.conf.new" "$APACHE_CONF_DIR/apache2.conf"
     fi
+
+    # Ensure Apache2 log directory exists with proper permissions
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Setting up Apache2 log directory..."
+    fi
+    sudo mkdir -p "$APACHE_LOG_DIR"
+    sudo chown www-data:adm "$APACHE_LOG_DIR"
+    sudo chmod 755 "$APACHE_LOG_DIR"
+
+    # Create minimal ports.conf for Apache2 (ports will be added dynamically when vhosts are created)
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Installing minimal ports configuration..."
+    fi
+    sudo tee "$APACHE_CONF_DIR/ports.conf" > /dev/null << 'PORTSEOF'
+# Bashmin Apache2 Configuration
+# Ports are added dynamically when virtual hosts are created
+# Port range 8080-8082 reserved for PHP versions 8.2-8.4
+# Listening on localhost only for security
+
+# Default port to prevent "no listening sockets" error
+# Using non-standard port to avoid conflicts
+Listen 127.0.0.1:8080
+
+# SSL support (will be used when SSL vhosts are created)
+<IfModule ssl_module>
+	Listen 127.0.0.1:8443 ssl
+</IfModule>
+
+<IfModule mod_gnutls.c>
+	Listen 127.0.0.1:8443 ssl
+</IfModule>
+
+# vim: syntax=apache ts=4 sw=4 sts=4 sr noet
+PORTSEOF
+
+    # Create a minimal default site to prevent "no virtual hosts" warnings
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Creating default site configuration..."
+    fi
+    sudo tee "$APACHE_SITES_AVAILABLE/000-bashmin-default.conf" > /dev/null << 'DEFAULTEOF'
+<VirtualHost 127.0.0.1:8080>
+    ServerName localhost
+    DocumentRoot /var/www/html
+
+    <Directory /var/www/html>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/default-error.log
+    CustomLog ${APACHE_LOG_DIR}/default-access.log combined
+</VirtualHost>
+DEFAULTEOF
+
+    # Enable the default site
+    sudo a2ensite 000-bashmin-default >/dev/null 2>&1
     
     # Install optimization configurations
     if [[ -d "$SYSTEM_CONFIGS/conf-available" ]]; then
@@ -565,7 +625,7 @@ ARGUMENTS:
 OPTIONS:
     --webroot PATH          Custom webroot path (default: $DEFAULT_WEBROOT/DOMAIN/public)
     --php-version VERSION   PHP version to use (default: $DEFAULT_PHP_VERSION)
-    --port PORT             Port to listen on (default: 8080)
+    --port PORT             Port to listen on (8080-8082, default: 8080)
     --no-ssl                Disable SSL configuration
     --no-directory          Don't create webroot directory
     --no-hosts              Don't update /etc/hosts file
@@ -580,16 +640,16 @@ EXAMPLES:
     $0 api.local --php-version 8.4          # Custom PHP version
     $0 app.local --webroot /custom/path     # Custom webroot
     $0 test.local --port 8081 --no-ssl     # Custom port, no SSL
+    $0 php84.local --port 8082 --php-version 8.4  # PHP 8.4 on port 8082
 
 NOTES:
     - Requires sudo privileges
     - Creates directory structure if needed
     - Updates /etc/hosts with 127.0.0.1 entry
+    - Dynamically adds required ports to Apache2 configuration
     - Enables site automatically
     - Reloads Apache2 configuration
-
-EOF
-}
+    - To remove vhost: sudo a2dissite DOMAIN && sudo rm /etc/apache2/sites-available/DOMAIN.conf
 
 # Validate domain name
 if [[ -z "$DOMAIN" ]]; then
@@ -598,15 +658,63 @@ if [[ -z "$DOMAIN" ]]; then
     exit 1
 fi
 
+# Validate port range (8080-8082 for 3 latest PHP versions)
+if [[ ! "$PORT" =~ ^808[0-2]$ ]]; then
+    print_error "Invalid port: $PORT"
+    print_info "Port must be in range 8080-8082 (one for each of the 3 latest PHP versions)"
+    exit 1
+fi
+
 # Set default webroot if not specified
 if [[ -z "$WEBROOT" ]]; then
     WEBROOT="$DEFAULT_WEBROOT/$DOMAIN/public"
 fi
 
+# Function to add port to ports.conf if not already present
+add_port_to_config() {
+    local port="$1"
+    local ssl_port="$((port + 363))"  # 8080 -> 8443, 8081 -> 8444, 8082 -> 8445
+
+    # Check if HTTP ports already exist (IPv4 and IPv6 localhost)
+    if ! grep -q "^Listen 127.0.0.1:$port$" /etc/apache2/ports.conf; then
+        sudo sed -i "/^# vim: syntax=apache/i\\Listen 127.0.0.1:$port" /etc/apache2/ports.conf
+    fi
+    if ! grep -q "^Listen \\[::1\\]:$port$" /etc/apache2/ports.conf; then
+        sudo sed -i "/^# vim: syntax=apache/i\\Listen [::1]:$port" /etc/apache2/ports.conf
+    fi
+
+    # Check if SSL ports already exist (IPv4 and IPv6 localhost)
+    if ! grep -q "Listen 127.0.0.1:$ssl_port ssl" /etc/apache2/ports.conf; then
+        sudo sed -i "/<IfModule ssl_module>/a\\\\tListen 127.0.0.1:$ssl_port ssl" /etc/apache2/ports.conf
+        sudo sed -i "/<IfModule mod_gnutls.c>/a\\\\tListen 127.0.0.1:$ssl_port ssl" /etc/apache2/ports.conf
+    fi
+    if ! grep -q "Listen \\[::1\\]:$ssl_port ssl" /etc/apache2/ports.conf; then
+        sudo sed -i "/<IfModule ssl_module>/a\\\\tListen [::1]:$ssl_port ssl" /etc/apache2/ports.conf
+        sudo sed -i "/<IfModule mod_gnutls.c>/a\\\\tListen [::1]:$ssl_port ssl" /etc/apache2/ports.conf
+    fi
+}
+
+# Function to remove port from ports.conf if no vhosts use it
+remove_port_from_config() {
+    local port="$1"
+    local ssl_port="$((port + 363))"
+
+    # Check if any enabled sites use this port
+    if ! grep -r ":$port>" /etc/apache2/sites-enabled/ >/dev/null 2>&1; then
+        sudo sed -i "/^Listen 127.0.0.1:$port$/d" /etc/apache2/ports.conf
+        sudo sed -i "/^Listen \\[::1\\]:$port$/d" /etc/apache2/ports.conf
+        sudo sed -i "/Listen 127.0.0.1:$ssl_port ssl/d" /etc/apache2/ports.conf
+        sudo sed -i "/Listen \\[::1\\]:$ssl_port ssl/d" /etc/apache2/ports.conf
+    fi
+}
+
 # Check if running as root or with sudo
 if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-    print_error "This script requires sudo privileges"
-    exit 1
+    print_info "This script requires sudo privileges. Please enter your password when prompted."
+    if ! sudo -v; then
+        print_error "Failed to obtain sudo privileges"
+        exit 1
+    fi
 fi
 
 # Check if template exists
@@ -638,7 +746,7 @@ if [[ "$CREATE_DIRECTORY" == true ]]; then
         sudo mkdir -p "$WEBROOT"
         sudo chown www-data:www-data "$WEBROOT"
         sudo chmod 755 "$WEBROOT"
-        
+
         # Create basic index.php if it doesn't exist
         if [[ ! -f "$WEBROOT/index.php" ]]; then
             sudo tee "$WEBROOT/index.php" > /dev/null << INDEXEOF
@@ -663,17 +771,20 @@ else
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_info "Creating site configuration: $SITE_CONFIG"
     fi
-    
+
     # Generate configuration from template
     sudo cp "$VHOST_TEMPLATE" "$SITE_CONFIG"
-    
+
     # Replace placeholders
     sudo sed -i "s|ServerName php74.ti|ServerName $DOMAIN|g" "$SITE_CONFIG"
     sudo sed -i "s|127.0.0.1:8080|127.0.0.1:$PORT|g" "$SITE_CONFIG"
     sudo sed -i "s|/var/www/vhosts/php83-test/public|$WEBROOT|g" "$SITE_CONFIG"
     sudo sed -i "s|php8.3-fpm.sock|php${PHP_VERSION}-fpm.sock|g" "$SITE_CONFIG"
     sudo sed -i "s|php83.ti|$DOMAIN|g" "$SITE_CONFIG"
-    
+
+    # Add port to ports.conf if needed
+    add_port_to_config "$PORT"
+
     # Enable the site
     sudo a2ensite "$DOMAIN" >/dev/null 2>&1
 fi
@@ -699,15 +810,16 @@ if [[ "$DRY_RUN" == false ]]; then
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_info "Testing Apache configuration..."
     fi
-    
+
     if ! sudo apache2ctl -t >/dev/null 2>&1; then
         print_error "Apache configuration test failed"
         print_info "Rolling back changes..."
         sudo a2dissite "$DOMAIN" >/dev/null 2>&1 || true
         sudo rm -f "$SITE_CONFIG"
+        remove_port_from_config "$PORT"
         exit 1
     fi
-    
+
     # Reload Apache
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
         print_info "Reloading Apache2..."
@@ -918,7 +1030,7 @@ Next Steps:
      $ADD_VHOST_SCRIPT example.local
 
   2. Test the installation:
-     curl -I http://localhost
+     curl -I http://localhost:8080
 
   3. Check Apache status:
      sudo systemctl status apache2

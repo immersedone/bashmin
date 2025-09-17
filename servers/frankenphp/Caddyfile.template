@@ -14,7 +14,14 @@
 import vhosts/*
 
 # Default catch-all for development
-:80 {
+# FrankenPHP uses port range 8100-8199, localhost only
+127.0.0.1:8100 {
+	root * /var/www/html
+	php_server
+}
+
+# IPv6 localhost support (if enabled)
+[::1]:8100 {
 	root * /var/www/html
 	php_server
 }

@@ -76,7 +76,7 @@ OPTIONS:
 
 EXAMPLES:
     $0                          # Install latest FrankenPHP
-    $0 --version v1.0.0         # Install specific version
+    $0 --version v1.9.1         # Install specific version
     $0 --force                  # Force reinstall
     $0 --dry-run --verbose      # See what would be installed
 
@@ -97,8 +97,11 @@ check_prerequisites() {
     if [[ $EUID -eq 0 ]]; then
         print_warning "Running as root. This is not recommended for security reasons."
     elif ! sudo -n true 2>/dev/null; then
-        print_error "This script requires sudo privileges"
-        exit 1
+        print_info "This script requires sudo privileges. Please enter your password when prompted."
+        if ! sudo -v; then
+            print_error "Failed to obtain sudo privileges"
+            exit 1
+        fi
     fi
     
     # Check Ubuntu/Debian system
@@ -137,7 +140,9 @@ install_dependencies() {
     execute_command "sudo apt install -y ${packages[*]}" "Installing base dependencies"
     
     print_info "Installing PHP and extensions..."
-    
+
+    # Note: php-opcache and php-json are included in php-cli/php-fpm packages in PHP 7.0+
+    # OPcache is enabled by default in PHP 5.5+ and JSON is a core extension in PHP 8.0+
     local php_packages=(
         "php-cli"
         "php-fpm"
@@ -151,8 +156,6 @@ install_dependencies() {
         "php-gd"
         "php-zip"
         "php-intl"
-        "php-opcache"
-        "php-json"
         "php-redis"
         "php-imagick"
     )
@@ -188,18 +191,36 @@ create_directories() {
 # Function to download FrankenPHP binary
 download_frankenphp() {
     print_info "Downloading FrankenPHP binary..."
-    
+
+    # Detect system architecture
+    local arch
+    case "$(uname -m)" in
+        x86_64)
+            arch="x86_64"
+            ;;
+        aarch64|arm64)
+            arch="aarch64"
+            ;;
+        *)
+            print_error "Unsupported architecture: $(uname -m)"
+            return 1
+            ;;
+    esac
+
     local download_url
     if [[ "$FRANKENPHP_VERSION" == "latest" ]]; then
-        download_url="https://github.com/dunglas/frankenphp/releases/latest/download/frankenphp-linux-amd64"
+        download_url="https://github.com/php/frankenphp/releases/latest/download/frankenphp-linux-${arch}"
     else
-        download_url="https://github.com/dunglas/frankenphp/releases/download/$FRANKENPHP_VERSION/frankenphp-linux-amd64"
+        download_url="https://github.com/php/frankenphp/releases/download/$FRANKENPHP_VERSION/frankenphp-linux-${arch}"
     fi
-    
+
+    print_info "Download URL: $download_url"
+
     # Download to temporary location first
     local temp_binary="/tmp/frankenphp-$(date +%s)"
-    
-    execute_command "curl -fsSL '$download_url' -o '$temp_binary'" "Downloading FrankenPHP binary"
+
+    # Use curl with follow redirects and better error handling
+    execute_command "curl -fsSL --retry 3 --retry-delay 2 '$download_url' -o '$temp_binary'" "Downloading FrankenPHP binary"
     execute_command "sudo install '$temp_binary' '$FRANKENPHP_BINARY'" "Installing FrankenPHP binary"
     execute_command "rm -f '$temp_binary'" "Cleaning up temporary files"
     
@@ -232,7 +253,8 @@ install_configuration() {
 import vhosts/*
 
 # Default development site
-:80 {
+# FrankenPHP uses port range 8100-8199
+:8100 {
 	root * /var/www/html
 	php_server
 	file_server
@@ -395,8 +417,8 @@ View Logs:
   sudo tail -f /var/log/frankenphp/access.log
 
 Test Installation:
-  curl http://localhost               # Test default site
-  curl -H "Host: domain.com" http://localhost  # Test vhost
+  curl http://localhost:8100          # Test default site
+  curl -H "Host: domain.com" http://localhost:8100  # Test vhost
 
 Next Steps:
 1. Configure your virtual hosts in /etc/frankenphp/vhosts/
