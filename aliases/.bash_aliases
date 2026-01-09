@@ -11,11 +11,11 @@ alias ~='cd ~'
 alias -- -='cd -'
 
 # Enhanced ls aliases
-alias ls='ls --color=auto'
-alias ll='ls -alF'
-alias la='ls -A'
-alias l='ls -CF'
-alias lt='ls -ltr'
+alias ls='ls --color=auto -h'
+alias ll='ls -alFh'
+alias la='ls -Ah'
+alias l='ls -CFh'
+alias lt='ls -ltrh'
 alias lh='ls -lah'
 alias lsa='ls -lah'
 
@@ -47,7 +47,7 @@ alias WIN_W="cd /mnt/w/"
 # === FILE OPERATIONS ===
 alias cp='cp -iv'
 alias mv='mv -iv'
-alias rm='rm -iv'
+alias rm='rm -v'
 alias ln='ln -iv'
 alias chown='chown --preserve-root'
 alias chmod='chmod --preserve-root'
@@ -226,6 +226,7 @@ alias bashmin='cd /var/www/vhosts/bashmin'
 alias bm='cd /var/www/vhosts/bashmin'
 
 # Server management
+alias add-vhost='/var/www/vhosts/bashmin/add-vhost.sh'
 alias add-vhost-apache='sudo /var/www/vhosts/bashmin/servers/apache2/add-vhost.sh'
 alias add-vhost-nginx='sudo /var/www/vhosts/bashmin/servers/nginx/add-vhost.sh'
 alias add-vhost-frankenphp='sudo /var/www/vhosts/bashmin/servers/frankenphp/add-vhost.sh'

@@ -25,6 +25,7 @@ source "$PROJECT_ROOT/_helpers/system.sh"
 
 # Constants
 readonly MARIADB_SERVICE="mariadb"
+readonly MARIADB_LTS_VERSION="11.8"  # Latest LTS version
 readonly MARIADB_CONFIG_SOURCE="$PROJECT_ROOT/system/etc/mysql/mariadb.conf.d/50-server.cnf"
 readonly MARIADB_CONFIG_TARGET="/etc/mysql/mariadb.conf.d/50-server.cnf"
 readonly DEFAULT_ROOT_PASSWORD=""
@@ -211,6 +212,34 @@ prompt_admin_user() {
         fi
     done
     print_success "$ADMIN_USERNAME user password set"
+}
+
+# Function to setup MariaDB repository
+setup_mariadb_repository() {
+    print_info "Setting up MariaDB $MARIADB_LTS_VERSION repository..."
+    
+    # Install prerequisites
+    local prereq_packages=(
+        "software-properties-common"
+        "dirmngr"
+        "apt-transport-https"
+        "ca-certificates"
+        "curl"
+    )
+    install_packages "${prereq_packages[@]}"
+    
+    # Get OS codename
+    local os_codename
+    os_codename=$(lsb_release -sc)
+    
+    # Import MariaDB GPG key
+    execute_command "curl -fsSL https://mariadb.org/mariadb_release_signing_key.asc | sudo gpg --dearmor -o /usr/share/keyrings/mariadb-keyring.gpg" "Importing MariaDB GPG key"
+    
+    # Add MariaDB repository
+    local repo_file="/etc/apt/sources.list.d/mariadb.list"
+    execute_command "echo 'deb [signed-by=/usr/share/keyrings/mariadb-keyring.gpg] https://deb.mariadb.org/$MARIADB_LTS_VERSION/ubuntu $os_codename main' | sudo tee '$repo_file'" "Adding MariaDB repository"
+    
+    print_success "MariaDB repository configured for version $MARIADB_LTS_VERSION"
 }
 
 # Function to update package repository
@@ -452,6 +481,7 @@ main() {
     validate_prerequisites
     prompt_root_password
     prompt_admin_user
+    setup_mariadb_repository
     update_repository
     install_mariadb
     configure_mariadb

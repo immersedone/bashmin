@@ -284,6 +284,36 @@ install_systemd_service() {
     # Reload systemd
     execute_command "sudo systemctl daemon-reload" "Reloading systemd configuration"
     
+    # Create SysV init compatibility script for 'service' command
+    print_info "Creating SysV init compatibility script..."
+    local init_script="/etc/init.d/$FRANKENPHP_SERVICE"
+    execute_command "sudo tee '$init_script' > /dev/null" "Creating init.d script" <<'INITEOF'
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          frankenphp
+# Required-Start:    $network $remote_fs $syslog
+# Required-Stop:     $network $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: FrankenPHP Web Server
+# Description:       Modern PHP application server built on top of Caddy
+### END INIT INFO
+
+# This is a compatibility wrapper for systemd
+case "$1" in
+    start|stop|restart|reload|force-reload|status)
+        exec systemctl "$1" frankenphp.service
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|reload|force-reload|status}"
+        exit 1
+        ;;
+esac
+INITEOF
+    
+    execute_command "sudo chmod +x '$init_script'" "Making init.d script executable"
+    execute_command "sudo update-rc.d $FRANKENPHP_SERVICE defaults" "Registering SysV init script"
+    
     print_success "Systemd service installed successfully"
 }
 

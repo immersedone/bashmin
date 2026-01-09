@@ -138,6 +138,9 @@ NOTES:
     - Reloads Apache2 configuration
     - To remove vhost: sudo a2dissite DOMAIN && sudo rm /etc/apache2/sites-available/DOMAIN.conf
 
+EOF
+}
+
 # Validate domain name
 if [[ -z "$DOMAIN" ]]; then
     print_error "Domain name is required"
@@ -152,9 +155,20 @@ if [[ ! "$PORT" =~ ^808[0-2]$ ]]; then
     exit 1
 fi
 
-# Set default webroot if not specified
+# Set default webroot with interactive prompt if not specified
 if [[ -z "$WEBROOT" ]]; then
-    WEBROOT="$DEFAULT_WEBROOT/$DOMAIN/public"
+    default_webroot="$DEFAULT_WEBROOT/$DOMAIN/public"
+    echo
+    print_info "Project directory configuration"
+    read -p "Enter webroot directory path (default: $default_webroot): " input_webroot
+    
+    if [[ -z "$input_webroot" ]]; then
+        WEBROOT="$default_webroot"
+    else
+        # Expand tilde and resolve path
+        WEBROOT="${input_webroot/#\~/$HOME}"
+    fi
+    print_success "Webroot directory: $WEBROOT"
 fi
 
 # Function to add port to ports.conf if not already present

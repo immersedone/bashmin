@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Script: servers/nginx/add-proxy.sh
-# Description: Generate Nginx proxy configuration with A/B testing capabilities
+# Description: Add reverse proxy configuration for Nginx
 # Usage: ./add-proxy.sh [OPTIONS] DOMAIN
 #
 
@@ -19,153 +19,89 @@ source "$PROJECT_ROOT/_helpers/cli.sh"
 readonly NGINX_SITES_AVAILABLE="/etc/nginx/sites-available"
 readonly NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
 readonly PROXY_TEMPLATE="$SCRIPT_DIR/proxy.config.example"
-readonly DEFAULT_SSL_CERT_PATH="/etc/letsencrypt/live"
+readonly VHOST_TEMPLATE="$SCRIPT_DIR/vhost.config.example"
 
 # Configuration variables
 DOMAIN=""
-AB_TEST_ENABLED=false
-AB_SPLIT_PERCENTAGE=50
-PRODUCTION_SERVERS=()
-STAGING_SERVERS=()
-CANARY_SERVERS=()
-LOAD_BALANCING_METHOD="round_robin"
-HEALTH_CHECK_ENABLED=true
-SSL_CERT_PATH=""
-SSL_KEY_PATH=""
-CREATE_SSL_REDIRECT=true
-ENABLE_WEBSOCKETS=false
-ENABLE_STATIC_CACHING=true
-MAX_BODY_SIZE="100M"
+BACKEND_TYPE=""  # apache2, frankenphp, custom
+BACKEND_HOST="127.0.0.1"
+BACKEND_PORT=""
+ENABLE_SSL=true
+SSL_CERT_PATH="/etc/letsencrypt/live"
+SSL_EMAIL=""
+ENABLE_AB_TESTING=false
+AB_SPLIT_PERCENT=50
+PRODUCTION_POOL=""
+STAGING_POOL=""
+CANARY_POOL=""
+LOAD_BALANCE_METHOD="least_conn"  # round_robin, least_conn, ip_hash
+UPDATE_HOSTS=true
 FORCE=false
 VERBOSE=false
 DRY_RUN=false
 QUIET=false
-
-# Function to show help
-show_help() {
-    cat << EOF
-Usage: $0 [OPTIONS] DOMAIN
-
-Create an Nginx proxy configuration with A/B testing capabilities.
-
-ARGUMENTS:
-    DOMAIN                      Domain name for the proxy (required)
-
-OPTIONS:
-    --production SERVERS        Comma-separated list of production backend servers
-                               Format: ip:port or hostname:port
-    --staging SERVERS          Comma-separated list of staging backend servers
-    --canary SERVERS           Comma-separated list of canary backend servers
-    --ab-test                  Enable A/B testing between production and staging
-    --ab-split PERCENTAGE      A/B test split percentage for staging (default: 50)
-    --load-balancing METHOD    Load balancing method: round_robin, least_conn,
-                               ip_hash, hash, random (default: round_robin)
-    --ssl-cert PATH            Custom SSL certificate path
-    --ssl-key PATH             Custom SSL private key path
-    --no-ssl-redirect          Don't redirect HTTP to HTTPS
-    --enable-websockets        Enable WebSocket support
-    --no-static-caching        Disable static file caching
-    --max-body-size SIZE       Maximum request body size (default: 100M)
-    --no-health-check          Disable health checking
-    --force                    Overwrite existing configuration
-    --quiet                    Suppress non-essential output
-    --verbose                  Enable verbose output
-    --dry-run                  Show what would be created without executing
-    -h, --help                 Show this help message
-
-LOAD BALANCING METHODS:
-    round_robin                Default method, requests distributed evenly
-    least_conn                 Route to server with least active connections
-    ip_hash                    Route based on client IP hash (sticky sessions)
-    hash                       Route based on custom key hash
-    random                     Route requests randomly
-
-A/B TESTING:
-    When A/B testing is enabled, traffic is split between production and staging
-    pools based on the specified percentage. The split is deterministic based
-    on client IP or custom criteria.
-
-EXAMPLES:
-    # Basic proxy to single backend
-    $0 api.local --production 127.0.0.1:8080
-
-    # Load balanced proxy with multiple backends
-    $0 app.local --production 127.0.0.1:8080,127.0.0.1:8081,127.0.0.1:8082
-
-    # A/B testing between production and staging
-    $0 test.local --production 127.0.0.1:8080 --staging 127.0.0.1:8090 --ab-test --ab-split 30
-
-    # Advanced configuration with canary deployment
-    $0 web.local --production 10.0.1.10:80,10.0.1.11:80 \\
-                 --staging 10.0.2.10:80 \\
-                 --canary 10.0.3.10:80 \\
-                 --load-balancing least_conn \\
-                 --enable-websockets
-
-NOTES:
-    - Requires sudo privileges
-    - Automatically enables site configuration
-    - Updates /etc/hosts with 127.0.0.1 entry
-    - Creates SSL configuration if certificates exist
-    - Includes health monitoring and failover
-
-EOF
-}
+TEMPLATE_MODE="simple"  # simple or advanced
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --production)
-            IFS=',' read -ra PRODUCTION_SERVERS <<< "$2"
+        -d|--domain)
+            DOMAIN="$2"
             shift 2
             ;;
-        --staging)
-            IFS=',' read -ra STAGING_SERVERS <<< "$2"
+        -b|--backend)
+            BACKEND_TYPE="$2"
             shift 2
             ;;
-        --canary)
-            IFS=',' read -ra CANARY_SERVERS <<< "$2"
+        --backend-host)
+            BACKEND_HOST="$2"
             shift 2
             ;;
-        --ab-test)
-            AB_TEST_ENABLED=true
+        --backend-port)
+            BACKEND_PORT="$2"
+            shift 2
+            ;;
+        --no-ssl)
+            ENABLE_SSL=false
+            shift
+            ;;
+        --ssl-email)
+            SSL_EMAIL="$2"
+            ENABLE_SSL=true
+            shift 2
+            ;;
+        --ab-testing)
+            ENABLE_AB_TESTING=true
+            TEMPLATE_MODE="advanced"
             shift
             ;;
         --ab-split)
-            AB_SPLIT_PERCENTAGE="$2"
-            AB_TEST_ENABLED=true
+            AB_SPLIT_PERCENT="$2"
+            ENABLE_AB_TESTING=true
+            TEMPLATE_MODE="advanced"
             shift 2
             ;;
-        --load-balancing)
-            LOAD_BALANCING_METHOD="$2"
+        --production-pool)
+            PRODUCTION_POOL="$2"
+            TEMPLATE_MODE="advanced"
             shift 2
             ;;
-        --ssl-cert)
-            SSL_CERT_PATH="$2"
+        --staging-pool)
+            STAGING_POOL="$2"
+            TEMPLATE_MODE="advanced"
             shift 2
             ;;
-        --ssl-key)
-            SSL_KEY_PATH="$2"
+        --canary-pool)
+            CANARY_POOL="$2"
+            TEMPLATE_MODE="advanced"
             shift 2
             ;;
-        --no-ssl-redirect)
-            CREATE_SSL_REDIRECT=false
-            shift
-            ;;
-        --enable-websockets)
-            ENABLE_WEBSOCKETS=true
-            shift
-            ;;
-        --no-static-caching)
-            ENABLE_STATIC_CACHING=false
-            shift
-            ;;
-        --max-body-size)
-            MAX_BODY_SIZE="$2"
+        --load-balance)
+            LOAD_BALANCE_METHOD="$2"
             shift 2
             ;;
-        --no-health-check)
-            HEALTH_CHECK_ENABLED=false
+        --no-hosts)
+            UPDATE_HOSTS=false
             shift
             ;;
         --force)
@@ -205,47 +141,144 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Function to validate domain and inputs
-validate_inputs() {
+# Function to show help
+show_help() {
+    cat << 'EOF'
+Usage: ./add-proxy.sh [OPTIONS] DOMAIN
+
+Add reverse proxy configuration for Nginx to proxy requests to backend servers
+(Apache2 or FrankenPHP).
+
+ARGUMENTS:
+    DOMAIN                  Domain name for the proxy (required)
+
+OPTIONS:
+    -d, --domain DOMAIN         Domain name (alternative to positional arg)
+    -b, --backend TYPE          Backend type: apache2, frankenphp, custom
+    --backend-host HOST         Backend host (default: 127.0.0.1)
+    --backend-port PORT         Backend port (auto-detected if not specified)
+    --no-ssl                    Disable SSL/TLS configuration
+    --ssl-email EMAIL           Email for Let's Encrypt SSL certificate
+    --ab-testing                Enable A/B testing with multiple backend pools
+    --ab-split PERCENT          A/B testing split percentage (default: 50)
+    --production-pool SERVERS   Production pool servers (comma-separated)
+    --staging-pool SERVERS      Staging pool servers (comma-separated)
+    --canary-pool SERVERS       Canary pool servers (comma-separated)
+    --load-balance METHOD       Load balancing: round_robin, least_conn, ip_hash
+    --no-hosts                  Don't update /etc/hosts file
+    --force                     Overwrite existing configuration
+    --quiet                     Suppress non-essential output
+    --verbose                   Enable verbose output
+    --dry-run                   Show what would be created without executing
+    -h, --help                  Show this help message
+
+BACKEND TYPES:
+    apache2                 Proxy to Apache2 (ports 8080-8082)
+    frankenphp              Proxy to FrankenPHP (ports 8100-8199)
+    custom                  Custom backend (requires --backend-port)
+
+EXAMPLES:
+    # Simple proxy to Apache2 on default port 8080
+    ./add-proxy.sh example.local --backend apache2
+
+    # Proxy to FrankenPHP on port 8100
+    ./add-proxy.sh app.local --backend frankenphp --backend-port 8100
+
+    # Custom backend with specific port
+    ./add-proxy.sh api.local --backend custom --backend-port 3000
+
+    # A/B testing with production and staging pools
+    ./add-proxy.sh test.local --backend apache2 \
+        --ab-testing --ab-split 80 \
+        --production-pool "127.0.0.1:8080,127.0.0.1:8081" \
+        --staging-pool "127.0.0.1:8082"
+
+    # Advanced load balancing
+    ./add-proxy.sh balanced.local --backend frankenphp \
+        --production-pool "127.0.0.1:8100,127.0.0.1:8101,127.0.0.1:8102" \
+        --load-balance least_conn
+
+    # Without SSL
+    ./add-proxy.sh dev.local --backend apache2 --no-ssl
+
+NOTES:
+    - Requires sudo privileges and Nginx to be installed
+    - Creates reverse proxy with modern security headers
+    - Supports WebSocket connections
+    - Includes rate limiting and DDoS protection
+    - SSL certificates must exist or use --no-ssl for development
+    - To remove proxy: sudo rm /etc/nginx/sites-{available,enabled}/DOMAIN.conf
+
+DEFAULT PORTS:
+    Apache2:    8080 (PHP 8.5), 8081 (PHP 8.4), 8082 (PHP 8.3)
+    FrankenPHP: 8100-8199 (HTTP), 8443-8543 (HTTPS)
+
+EOF
+}
+
+# Function to validate domain name
+validate_domain() {
     if [[ -z "$DOMAIN" ]]; then
-        print_error "Domain name is required"
+        print_error "No domain specified"
         show_help
         exit 1
     fi
     
     # Basic domain validation
-    if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
+    if [[ ! "$DOMAIN" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$ ]]; then
         print_error "Invalid domain name: $DOMAIN"
+        print_info "Domain must contain only letters, numbers, hyphens, and dots"
         exit 1
     fi
     
-    # Check if at least production servers are specified
-    if [[ ${#PRODUCTION_SERVERS[@]} -eq 0 ]]; then
-        print_error "At least one production server must be specified"
-        print_info "Use --production to specify backend servers"
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_success "Domain validation passed: $DOMAIN"
+    fi
+}
+
+# Function to detect or validate backend configuration
+setup_backend_config() {
+    # Auto-detect backend port if not specified
+    if [[ -z "$BACKEND_PORT" ]]; then
+        case "$BACKEND_TYPE" in
+            apache2)
+                BACKEND_PORT=8080
+                print_info "Using default Apache2 port: $BACKEND_PORT"
+                ;;
+            frankenphp)
+                BACKEND_PORT=8100
+                print_info "Using default FrankenPHP port: $BACKEND_PORT"
+                ;;
+            custom)
+                print_error "Backend port required for custom backend type"
+                print_info "Use --backend-port PORT"
+                exit 1
+                ;;
+            *)
+                print_error "Unknown backend type: $BACKEND_TYPE"
+                print_info "Valid types: apache2, frankenphp, custom"
+                exit 1
+                ;;
+        esac
+    fi
+    
+    # Validate backend port
+    if [[ ! "$BACKEND_PORT" =~ ^[0-9]+$ ]] || [[ "$BACKEND_PORT" -lt 1 ]] || [[ "$BACKEND_PORT" -gt 65535 ]]; then
+        print_error "Invalid backend port: $BACKEND_PORT"
         exit 1
     fi
     
-    # Validate A/B split percentage
-    if [[ "$AB_SPLIT_PERCENTAGE" -lt 0 || "$AB_SPLIT_PERCENTAGE" -gt 100 ]]; then
-        print_error "A/B split percentage must be between 0 and 100"
-        exit 1
+    # Warn if backend port doesn't match expected ranges
+    if [[ "$BACKEND_TYPE" == "apache2" ]] && [[ ! "$BACKEND_PORT" =~ ^808[0-2]$ ]]; then
+        print_warning "Apache2 typically uses ports 8080-8082"
     fi
     
-    # If A/B testing is enabled, staging servers are required
-    if [[ "$AB_TEST_ENABLED" == true && ${#STAGING_SERVERS[@]} -eq 0 ]]; then
-        print_error "A/B testing requires staging servers"
-        print_info "Use --staging to specify staging backend servers"
-        exit 1
+    if [[ "$BACKEND_TYPE" == "frankenphp" ]] && [[ ! "$BACKEND_PORT" =~ ^81[0-9]{2}$ ]]; then
+        print_warning "FrankenPHP typically uses ports 8100-8199"
     fi
     
-    # Set SSL paths if not specified
-    if [[ -z "$SSL_CERT_PATH" ]]; then
-        SSL_CERT_PATH="$DEFAULT_SSL_CERT_PATH/$DOMAIN/fullchain.pem"
-    fi
-    
-    if [[ -z "$SSL_KEY_PATH" ]]; then
-        SSL_KEY_PATH="$DEFAULT_SSL_CERT_PATH/$DOMAIN/privkey.pem"
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_success "Backend configuration: $BACKEND_TYPE at $BACKEND_HOST:$BACKEND_PORT"
     fi
 }
 
@@ -256,7 +289,9 @@ check_prerequisites() {
     fi
     
     # Check if running as root or with sudo
-    if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+    if [[ $EUID -eq 0 ]]; then
+        print_warning "Running as root"
+    elif ! sudo -n true 2>/dev/null; then
         print_info "This script requires sudo privileges. Please enter your password when prompted."
         if ! sudo -v; then
             print_error "Failed to obtain sudo privileges"
@@ -265,405 +300,502 @@ check_prerequisites() {
     fi
     
     # Check if Nginx is installed
-    if ! command -v nginx >/dev/null 2>&1; then
+    if ! command -v nginx &> /dev/null; then
         print_error "Nginx is not installed"
-        print_info "Run the Nginx install script first: $PROJECT_ROOT/servers/nginx/install.sh"
+        print_info "Install with: sudo apt install nginx"
         exit 1
     fi
     
-    # Check if template exists
-    if [[ ! -f "$PROXY_TEMPLATE" ]]; then
-        print_error "Proxy template not found: $PROXY_TEMPLATE"
+    # Check if sites directories exist
+    if [[ ! -d "$NGINX_SITES_AVAILABLE" ]]; then
+        print_error "Nginx sites-available directory not found: $NGINX_SITES_AVAILABLE"
         exit 1
     fi
     
-    # Check if site already exists
-    local site_config="$NGINX_SITES_AVAILABLE/$DOMAIN.conf"
-    if [[ -f "$site_config" && "$FORCE" == false ]]; then
-        print_error "Site configuration already exists: $site_config"
-        print_info "Use --force to overwrite existing configuration"
-        exit 1
-    fi
-}
-
-# Function to generate upstream pools
-generate_upstream_pools() {
-    local upstream_config=""
-    
-    # Production pool
-    if [[ ${#PRODUCTION_SERVERS[@]} -gt 0 ]]; then
-        upstream_config+="# Production Backend Pool\n"
-        upstream_config+="upstream production_pool {\n"
-        
-        # Add load balancing method
-        case "$LOAD_BALANCING_METHOD" in
-            least_conn)
-                upstream_config+="    least_conn;\n"
-                ;;
-            ip_hash)
-                upstream_config+="    ip_hash;\n"
-                ;;
-            hash)
-                upstream_config+="    hash \$remote_addr consistent;\n"
-                ;;
-            random)
-                upstream_config+="    random;\n"
-                ;;
-        esac
-        
-        # Add servers
-        for server in "${PRODUCTION_SERVERS[@]}"; do
-            local health_check=""
-            if [[ "$HEALTH_CHECK_ENABLED" == true ]]; then
-                health_check=" max_fails=3 fail_timeout=30s"
-            fi
-            upstream_config+="    server $server$health_check;\n"
-        done
-        
-        # Add keepalive connections
-        upstream_config+="    keepalive 32;\n"
-        upstream_config+="    keepalive_requests 100;\n"
-        upstream_config+="    keepalive_timeout 60s;\n"
-        upstream_config+="}\n\n"
+    if [[ ! -d "$NGINX_SITES_ENABLED" ]]; then
+        execute_command "sudo mkdir -p '$NGINX_SITES_ENABLED'" "Creating sites-enabled directory"
     fi
     
-    # Staging pool
-    if [[ ${#STAGING_SERVERS[@]} -gt 0 ]]; then
-        upstream_config+="# Staging Backend Pool\n"
-        upstream_config+="upstream staging_pool {\n"
-        
-        # Add load balancing method
-        case "$LOAD_BALANCING_METHOD" in
-            least_conn)
-                upstream_config+="    least_conn;\n"
-                ;;
-            ip_hash)
-                upstream_config+="    ip_hash;\n"
-                ;;
-            hash)
-                upstream_config+="    hash \$remote_addr consistent;\n"
-                ;;
-            random)
-                upstream_config+="    random;\n"
-                ;;
-        esac
-        
-        # Add servers
-        for server in "${STAGING_SERVERS[@]}"; do
-            local health_check=""
-            if [[ "$HEALTH_CHECK_ENABLED" == true ]]; then
-                health_check=" max_fails=3 fail_timeout=30s"
-            fi
-            upstream_config+="    server $server$health_check;\n"
-        done
-        
-        upstream_config+="    keepalive 32;\n"
-        upstream_config+="}\n\n"
+    # Check if template exists (for simple mode)
+    if [[ "$TEMPLATE_MODE" == "simple" && ! -f "$VHOST_TEMPLATE" ]]; then
+        print_warning "Vhost template not found, will use inline configuration"
     fi
     
-    # Canary pool
-    if [[ ${#CANARY_SERVERS[@]} -gt 0 ]]; then
-        upstream_config+="# Canary Backend Pool\n"
-        upstream_config+="upstream canary_pool {\n"
-        
-        # Add servers
-        for server in "${CANARY_SERVERS[@]}"; do
-            local health_check=""
-            if [[ "$HEALTH_CHECK_ENABLED" == true ]]; then
-                health_check=" max_fails=3 fail_timeout=30s"
-            fi
-            upstream_config+="    server $server$health_check;\n"
-        done
-        
-        upstream_config+="    keepalive 32;\n"
-        upstream_config+="}\n\n"
-    fi
-    
-    echo -e "$upstream_config"
-}
-
-# Function to generate A/B testing logic
-generate_ab_logic() {
-    if [[ "$AB_TEST_ENABLED" == false ]]; then
-        echo "# A/B Testing: Disabled"
-        return
-    fi
-    
-    local ab_logic=""
-    
-    ab_logic+="# A/B Testing Configuration\n"
-    ab_logic+="# Split: ${AB_SPLIT_PERCENTAGE}% to staging, $((100 - AB_SPLIT_PERCENTAGE))% to production\n\n"
-    
-    ab_logic+="# Generate consistent hash for A/B testing\n"
-    ab_logic+="map \$remote_addr \$ab_test_bucket {\n"
-    ab_logic+="    default 0;\n"
-    ab_logic+="    ~(?P<ip>.*) \$ip;\n"
-    ab_logic+="}\n\n"
-    
-    ab_logic+="# A/B test decision based on IP hash\n"
-    ab_logic+="map \$ab_test_bucket \$backend_pool {\n"
-    ab_logic+="    default production_pool;\n"
-    
-    # Calculate hash ranges for staging
-    local staging_range=$((AB_SPLIT_PERCENTAGE * 256 / 100))
-    for ((i=0; i<staging_range; i++)); do
-        ab_logic+="    ~.*$i\$ staging_pool;\n"
-    done
-    
-    ab_logic+="}\n\n"
-    
-    ab_logic+="# Add A/B test headers\n"
-    ab_logic+="map \$backend_pool \$ab_test_variant {\n"
-    ab_logic+="    production_pool 'A';\n"
-    ab_logic+="    staging_pool 'B';\n"
-    ab_logic+="    canary_pool 'C';\n"
-    ab_logic+="    default 'A';\n"
-    ab_logic+="}\n"
-    
-    echo -e "$ab_logic"
-}
-
-# Function to generate location logic
-generate_location_logic() {
-    local location_logic=""
-    
-    if [[ "$AB_TEST_ENABLED" == true ]]; then
-        location_logic+="        # A/B Testing Logic\n"
-        location_logic+="        set \$target_pool \$backend_pool;\n"
-        location_logic+="        \n"
-        location_logic+="        # Override for canary testing (admin users, special headers, etc.)\n"
-        location_logic+="        if (\$http_x_canary_user = \"true\") {\n"
-        location_logic+="            set \$target_pool canary_pool;\n"
-        location_logic+="        }\n"
-        location_logic+="        \n"
-        location_logic+="        # Add A/B test information to response\n"
-        location_logic+="        add_header X-AB-Test-Variant \$ab_test_variant always;\n"
-        location_logic+="        add_header X-Backend-Pool \$target_pool always;\n"
-        location_logic+="        \n"
-        location_logic+="        # Proxy to selected pool\n"
-        location_logic+="        proxy_pass http://\$target_pool;\n"
-    else
-        location_logic+="        # Direct proxy to production pool\n"
-        location_logic+="        proxy_pass http://production_pool;\n"
-    fi
-    
-    echo -e "$location_logic"
-}
-
-# Function to create proxy configuration
-create_proxy_config() {
-    local domain="$1"
-    local site_config="$NGINX_SITES_AVAILABLE/$domain.conf"
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would create proxy configuration: $site_config"
-        return 0
+    # Check if advanced template exists (for A/B testing)
+    if [[ "$TEMPLATE_MODE" == "advanced" && ! -f "$PROXY_TEMPLATE" ]]; then
+        print_warning "Proxy template not found, will use inline configuration"
     fi
     
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Creating proxy configuration: $site_config"
+        print_success "Prerequisites check completed"
+    fi
+}
+
+# Function to check if site already exists
+check_existing_site() {
+    local site_config="$NGINX_SITES_AVAILABLE/$DOMAIN.conf"
+    
+    if [[ -f "$site_config" && "$FORCE" == false ]]; then
+        print_error "Site configuration already exists: $site_config"
+        print_info "Use --force to overwrite"
+        exit 1
+    fi
+}
+
+# Function to setup SSL paths
+setup_ssl_config() {
+    if [[ "$ENABLE_SSL" == true ]]; then
+        SSL_CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+        SSL_KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        
+        # Check if SSL certificates exist
+        if [[ ! -f "$SSL_CERT_PATH" || ! -f "$SSL_KEY_PATH" ]]; then
+            print_warning "SSL certificates not found for $DOMAIN"
+            print_info "Certificate path: $SSL_CERT_PATH"
+            print_info "Run certbot or use --no-ssl for development"
+            
+            if ! confirm_action "Continue without SSL?"; then
+                exit 1
+            fi
+            ENABLE_SSL=false
+        fi
+    fi
+}
+
+# Function to generate simple proxy configuration
+generate_simple_proxy_config() {
+    local site_config="$NGINX_SITES_AVAILABLE/$DOMAIN.conf"
+    
+    print_info "Generating simple proxy configuration..."
+    
+    local ssl_server_block=""
+    if [[ "$ENABLE_SSL" == true ]]; then
+        ssl_server_block=$(cat <<'SSLBLOCK'
+
+#### --- HTTPS: Port 443 Block --- ####
+server {
+    # Port Listeners
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+
+    # Server Names/Aliases
+    server_name {DOMAIN_NAME};
+
+    # SSL Configuration
+    ssl_certificate {SSL_CERT_PATH};
+    ssl_certificate_key {SSL_KEY_PATH};
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+
+    # Modern SSL Configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE+AESGCM:ECDHE+AES256:ECDHE+AES128:!aNULL:!MD5:!DSS;
+    ssl_prefer_server_ciphers off;
+
+    # HSTS
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+    # Security Headers
+    add_header X-Frame-Options DENY always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Rate Limiting (requires rate limit zone in nginx.conf)
+    # limit_req zone=borderforce burst=300 nodelay;
+
+    # Location Block
+    location / {
+        # Proxy Configuration
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        chunked_transfer_encoding off;
+
+        # Timeouts
+        proxy_connect_timeout 300;
+        proxy_send_timeout 100;
+        proxy_read_timeout 100;
+
+        # Upload Configuration
+        client_max_body_size 512M;
+        client_body_buffer_size 128M;
+
+        # Proxy Headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # WebSocket Support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Proxy Pass
+        proxy_pass http://{BACKEND_HOST}:{BACKEND_PORT};
+    }
+
+    # Logging
+    access_log /var/log/nginx/{DOMAIN_NAME}-access.log combined;
+    error_log /var/log/nginx/{DOMAIN_NAME}-error.log warn;
+}
+#### --- END HTTPS: Port 443 Block --- ####
+
+# WebSocket upgrade handling
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+SSLBLOCK
+)
     fi
     
-    # Generate configuration components
-    local upstream_pools
-    local ab_logic
-    local location_logic
+    local http_redirect=""
+    if [[ "$ENABLE_SSL" == true ]]; then
+        http_redirect="return 301 https://\$host\$request_uri;"
+    else
+        http_redirect=$(cat <<'HTTPBLOCK'
+
+        # Proxy Configuration
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        chunked_transfer_encoding off;
+
+        # Timeouts
+        proxy_connect_timeout 300;
+        proxy_send_timeout 100;
+        proxy_read_timeout 100;
+
+        # Upload Configuration
+        client_max_body_size 512M;
+        client_body_buffer_size 128M;
+
+        # Proxy Headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # WebSocket Support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Proxy Pass
+        proxy_pass http://{BACKEND_HOST}:{BACKEND_PORT};
+HTTPBLOCK
+)
+    fi
     
-    upstream_pools=$(generate_upstream_pools)
-    ab_logic=$(generate_ab_logic)
-    location_logic=$(generate_location_logic)
-    
-    # Create configuration from template
-    sudo cp "$PROXY_TEMPLATE" "$site_config"
+    # Generate configuration
+    execute_command "sudo tee '$site_config' > /dev/null" "Creating proxy configuration" <<EOF
+#####
+#
+#   File: $site_config
+#   Domain: $DOMAIN
+#   Backend: $BACKEND_TYPE ($BACKEND_HOST:$BACKEND_PORT)
+#   Created: $(date)
+#   Type: Reverse Proxy (Simple)
+#
+##
+
+#### --- HTTP: Port 80 Block --- ####
+server {
+    # Port Listeners
+    listen 80;
+    listen [::]:80;
+
+    # Server Names/Aliases
+    server_name $DOMAIN;
+
+    # Location Block
+    location / {
+        $http_redirect
+    }
+}
+#### --- END HTTP: Port 80 Block --- ####
+$ssl_server_block
+EOF
     
     # Replace placeholders
-    sudo sed -i "s|{DOMAIN_NAME}|$domain|g" "$site_config"
+    sudo sed -i "s|{DOMAIN_NAME}|$DOMAIN|g" "$site_config"
+    sudo sed -i "s|{BACKEND_HOST}|$BACKEND_HOST|g" "$site_config"
+    sudo sed -i "s|{BACKEND_PORT}|$BACKEND_PORT|g" "$site_config"
     sudo sed -i "s|{SSL_CERT_PATH}|$SSL_CERT_PATH|g" "$site_config"
     sudo sed -i "s|{SSL_KEY_PATH}|$SSL_KEY_PATH|g" "$site_config"
     
-    # Replace multi-line blocks
-    sudo sed -i "/{UPSTREAM_POOLS}/c\\$upstream_pools" "$site_config"
-    sudo sed -i "/{AB_LOGIC}/c\\$ab_logic" "$site_config"
-    sudo sed -i "/{AB_LOCATION_LOGIC}/c\\$location_logic" "$site_config"
+    print_success "Proxy configuration created: $site_config"
+}
+
+# Function to generate advanced proxy configuration with A/B testing
+generate_advanced_proxy_config() {
+    local site_config="$NGINX_SITES_AVAILABLE/$DOMAIN.conf"
     
-    # Update client_max_body_size
-    sudo sed -i "s|client_max_body_size 100M|client_max_body_size $MAX_BODY_SIZE|g" "$site_config"
+    print_info "Generating advanced proxy configuration with A/B testing..."
     
-    # Handle SSL redirect
-    if [[ "$CREATE_SSL_REDIRECT" == false ]]; then
-        sudo sed -i '/return 301 https:/d' "$site_config"
+    # Parse pool configurations
+    local upstream_pools=""
+    local ab_logic=""
+    local ab_location_logic=""
+    
+    # Production pool
+    if [[ -n "$PRODUCTION_POOL" ]]; then
+        upstream_pools+="upstream production_pool {\n"
+        upstream_pools+="    $LOAD_BALANCE_METHOD;\n"
+        IFS=',' read -ra SERVERS <<< "$PRODUCTION_POOL"
+        for server in "${SERVERS[@]}"; do
+            upstream_pools+="    server $server max_fails=3 fail_timeout=30s;\n"
+        done
+        upstream_pools+="    keepalive 32;\n"
+        upstream_pools+="}\n\n"
+    else
+        upstream_pools+="upstream production_pool {\n"
+        upstream_pools+="    server $BACKEND_HOST:$BACKEND_PORT max_fails=3 fail_timeout=30s;\n"
+        upstream_pools+="    keepalive 32;\n"
+        upstream_pools+="}\n\n"
     fi
     
-    # Remove WebSocket handling if not needed
-    if [[ "$ENABLE_WEBSOCKETS" == false ]]; then
-        sudo sed -i '/proxy_set_header Upgrade/d' "$site_config"
-        sudo sed -i '/proxy_set_header Connection/d' "$site_config"
-        sudo sed -i '/map.*connection_upgrade/,+3d' "$site_config"
+    # Staging pool
+    if [[ -n "$STAGING_POOL" ]]; then
+        upstream_pools+="upstream staging_pool {\n"
+        upstream_pools+="    $LOAD_BALANCE_METHOD;\n"
+        IFS=',' read -ra SERVERS <<< "$STAGING_POOL"
+        for server in "${SERVERS[@]}"; do
+            upstream_pools+="    server $server max_fails=3 fail_timeout=30s;\n"
+        done
+        upstream_pools+="    keepalive 32;\n"
+        upstream_pools+="}\n\n"
     fi
     
-    # Remove static caching if disabled
-    if [[ "$ENABLE_STATIC_CACHING" == false ]]; then
-        sudo sed -i '/location ~.*\.(css|js|png/,+10d' "$site_config"
-        sudo sed -i '/location @proxy_static/,+7d' "$site_config"
+    # Canary pool
+    if [[ -n "$CANARY_POOL" ]]; then
+        upstream_pools+="upstream canary_pool {\n"
+        upstream_pools+="    $LOAD_BALANCE_METHOD;\n"
+        IFS=',' read -ra SERVERS <<< "$CANARY_POOL"
+        for server in "${SERVERS[@]}"; do
+            upstream_pools+="    server $server max_fails=3 fail_timeout=30s;\n"
+        done
+        upstream_pools+="    keepalive 32;\n"
+        upstream_pools+="}\n\n"
     fi
     
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_success "Proxy configuration created: $site_config"
+    # A/B testing logic
+    if [[ "$ENABLE_AB_TESTING" == true ]]; then
+        ab_logic+="# A/B Testing Split Logic\n"
+        ab_logic+="split_clients \"\${remote_addr}\${http_user_agent}\" \$backend_pool {\n"
+        ab_logic+="    $AB_SPLIT_PERCENT% production_pool;\n"
+        
+        if [[ -n "$STAGING_POOL" ]]; then
+            local staging_percent=$((100 - AB_SPLIT_PERCENT))
+            ab_logic+="    $staging_percent% staging_pool;\n"
+        elif [[ -n "$CANARY_POOL" ]]; then
+            local canary_percent=$((100 - AB_SPLIT_PERCENT))
+            ab_logic+="    $canary_percent% canary_pool;\n"
+        fi
+        
+        ab_logic+="}\n"
+        
+        ab_location_logic="proxy_pass http://\$backend_pool;"
+    else
+        ab_location_logic="proxy_pass http://production_pool;"
     fi
+    
+    # Use template if available, otherwise inline
+    if [[ -f "$PROXY_TEMPLATE" ]]; then
+        execute_command "sudo cp '$PROXY_TEMPLATE' '$site_config'" "Copying proxy template"
+        
+        # Replace placeholders
+        sudo sed -i "s|{DOMAIN_NAME}|$DOMAIN|g" "$site_config"
+        sudo sed -i "s|{SSL_CERT_PATH}|$SSL_CERT_PATH|g" "$site_config"
+        sudo sed -i "s|{SSL_KEY_PATH}|$SSL_KEY_PATH|g" "$site_config"
+        
+        # Replace upstream pools
+        sudo sed -i "/{UPSTREAM_POOLS}/c\\$upstream_pools" "$site_config"
+        
+        # Replace A/B logic
+        if [[ -n "$ab_logic" ]]; then
+            sudo sed -i "/{AB_LOGIC}/c\\$ab_logic" "$site_config"
+        else
+            sudo sed -i "/{AB_LOGIC}/d" "$site_config"
+        fi
+        
+        # Replace location logic
+        sudo sed -i "s|{AB_LOCATION_LOGIC}|$ab_location_logic|g" "$site_config"
+    else
+        print_warning "Advanced template not available, using simple configuration"
+        generate_simple_proxy_config
+        return
+    fi
+    
+    print_success "Advanced proxy configuration created: $site_config"
 }
 
 # Function to enable site
 enable_site() {
-    local domain="$1"
+    local site_config="$NGINX_SITES_AVAILABLE/$DOMAIN.conf"
+    local site_link="$NGINX_SITES_ENABLED/$DOMAIN.conf"
     
     if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would enable site: $domain"
+        echo "[DRY-RUN] Would enable site: $DOMAIN"
+        return 0
+    fi
+    
+    # Create symbolic link
+    if [[ -L "$site_link" ]]; then
+        execute_command "sudo rm '$site_link'" "Removing old symbolic link"
+    fi
+    
+    execute_command "sudo ln -s '$site_config' '$site_link'" "Enabling site"
+    
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_success "Site enabled: $DOMAIN"
+    fi
+}
+
+# Function to test nginx configuration
+test_nginx_config() {
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would test Nginx configuration"
         return 0
     fi
     
     if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Enabling site: $domain"
+        print_info "Testing Nginx configuration..."
     fi
     
-    if sudo nginx -t >/dev/null 2>&1; then
-        sudo ln -sf "$NGINX_SITES_AVAILABLE/$domain.conf" "$NGINX_SITES_ENABLED/"
-        sudo systemctl reload nginx
-        
+    if sudo nginx -t 2>&1 | grep -q "successful"; then
         if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_success "Site enabled and Nginx reloaded"
+            print_success "Nginx configuration test passed"
         fi
     else
         print_error "Nginx configuration test failed"
-        sudo nginx -t 2>&1 | head -5
+        sudo nginx -t
         exit 1
+    fi
+}
+
+# Function to reload nginx
+reload_nginx() {
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[DRY-RUN] Would reload Nginx"
+        return 0
+    fi
+    
+    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+        print_info "Reloading Nginx..."
+    fi
+    
+    execute_command "sudo systemctl reload nginx" "Reloading Nginx service"
+    
+    if [[ "$QUIET" == false ]]; then
+        print_success "Nginx reloaded successfully"
     fi
 }
 
 # Function to update hosts file
 update_hosts_file() {
-    local domain="$1"
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY-RUN] Would update /etc/hosts with: 127.0.0.1 $domain"
+    if [[ "$UPDATE_HOSTS" == false ]]; then
         return 0
     fi
     
-    # Use bashmin hosts script if available
     if [[ -x "$PROJECT_ROOT/hosts/update-hosts.sh" ]]; then
-        if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-            print_info "Updating /etc/hosts file..."
+        if [[ "$DRY_RUN" == true ]]; then
+            echo "[DRY-RUN] Would update /etc/hosts with: 127.0.0.1 $DOMAIN"
+        else
+            if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
+                print_info "Updating /etc/hosts file..."
+            fi
+            "$PROJECT_ROOT/hosts/update-hosts.sh" --quiet add 127.0.0.1 "$DOMAIN"
         fi
-        
-        "$PROJECT_ROOT/hosts/update-hosts.sh" --quiet add 127.0.0.1 "$domain" || true
+    else
+        print_warning "Hosts update script not found, skipping hosts file update"
     fi
 }
 
-# Function to show completion summary
-show_completion_summary() {
-    if [[ "$QUIET" == true || "$DRY_RUN" == true ]]; then
+# Function to display summary
+display_summary() {
+    if [[ "$QUIET" == true ]]; then
         return 0
     fi
     
-    echo
-    print_success "Nginx proxy configuration created successfully! 🚀"
-    echo
-    print_info "=== Proxy Configuration Details ==="
-    cat << EOF
-Domain:              $DOMAIN
-Production Servers:  ${PRODUCTION_SERVERS[*]}
-$(if [[ ${#STAGING_SERVERS[@]} -gt 0 ]]; then echo "Staging Servers:     ${STAGING_SERVERS[*]}"; fi)
-$(if [[ ${#CANARY_SERVERS[@]} -gt 0 ]]; then echo "Canary Servers:      ${CANARY_SERVERS[*]}"; fi)
-Load Balancing:      $LOAD_BALANCING_METHOD
-A/B Testing:         $(if [[ "$AB_TEST_ENABLED" == true ]]; then echo "Enabled (${AB_SPLIT_PERCENTAGE}% to staging)"; else echo "Disabled"; fi)
-Health Checks:       $(if [[ "$HEALTH_CHECK_ENABLED" == true ]]; then echo "Enabled"; else echo "Disabled"; fi)
-WebSockets:          $(if [[ "$ENABLE_WEBSOCKETS" == true ]]; then echo "Enabled"; else echo "Disabled"; fi)
-Max Body Size:       $MAX_BODY_SIZE
-Config File:         $NGINX_SITES_AVAILABLE/$DOMAIN.conf
-
-EOF
-
-    print_info "=== Testing URLs ==="
-    cat << EOF
-Main Site:           https://$DOMAIN
-Health Check:        https://$DOMAIN/health
-Nginx Status:        https://$DOMAIN/nginx_status (localhost only)
-
-EOF
-
-    if [[ "$AB_TEST_ENABLED" == true ]]; then
-        print_info "=== A/B Testing ==="
-        cat << EOF
-Traffic Split:       ${AB_SPLIT_PERCENTAGE}% → Staging Pool, $((100 - AB_SPLIT_PERCENTAGE))% → Production Pool
-Test Headers:        X-AB-Test-Variant (A/B/C), X-Backend-Pool
-Canary Access:       Add header 'X-Canary-User: true' to access canary pool
-
-EOF
+    echo ""
+    print_success "═══════════════════════════════════════════════════════════"
+    print_success "  Nginx Reverse Proxy Configuration Complete"
+    print_success "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Domain:        $DOMAIN"
+    echo "  Backend:       $BACKEND_TYPE ($BACKEND_HOST:$BACKEND_PORT)"
+    echo "  SSL:           $(if [[ "$ENABLE_SSL" == true ]]; then echo "Enabled"; else echo "Disabled"; fi)"
+    if [[ "$ENABLE_AB_TESTING" == true ]]; then
+        echo "  A/B Testing:   Enabled ($AB_SPLIT_PERCENT% split)"
     fi
-
-    print_info "=== Management Commands ==="
-    cat << EOF
-View logs:           sudo tail -f /var/log/nginx/$DOMAIN-*.log
-Test config:         sudo nginx -t
-Reload config:       sudo systemctl reload nginx
-Disable site:        sudo rm $NGINX_SITES_ENABLED/$DOMAIN.conf && sudo systemctl reload nginx
-
-EOF
-
-    print_info "=== Monitoring ==="
-    cat << EOF
-Check upstream:      curl -H "Host: $DOMAIN" http://localhost/health
-Test A/B split:      for i in {1..10}; do curl -s -H "Host: $DOMAIN" http://localhost | grep -o 'X-AB-Test-Variant: .' || true; done
-Backend status:      curl -I https://$DOMAIN (check X-Upstream-Server header)
-
-EOF
-    
-    print_info "🎯 Your A/B testing proxy is ready!"
+    echo "  Config File:   $NGINX_SITES_AVAILABLE/$DOMAIN.conf"
+    echo ""
+    echo "  Access URLs:"
+    echo "    HTTP:  http://$DOMAIN"
+    if [[ "$ENABLE_SSL" == true ]]; then
+        echo "    HTTPS: https://$DOMAIN"
+    fi
+    echo ""
+    echo "  Useful Commands:"
+    echo "    Test config:   sudo nginx -t"
+    echo "    Reload Nginx:  sudo systemctl reload nginx"
+    echo "    View logs:     sudo tail -f /var/log/nginx/$DOMAIN-*.log"
+    echo "    Disable site:  sudo rm $NGINX_SITES_ENABLED/$DOMAIN.conf && sudo systemctl reload nginx"
+    echo ""
+    print_success "═══════════════════════════════════════════════════════════"
 }
 
-# Main function
+# Main execution
 main() {
     # Validate inputs
-    validate_inputs
+    validate_domain
     
-    if [[ "$QUIET" == false ]]; then
-        show_script_header "Nginx A/B Testing Proxy Generator"
-        print_info "Creating proxy configuration for: $DOMAIN"
+    # Check if backend type is specified
+    if [[ -z "$BACKEND_TYPE" ]]; then
+        print_error "Backend type is required"
+        print_info "Use -b or --backend with: apache2, frankenphp, or custom"
+        show_help
+        exit 1
     fi
+    
+    # Setup backend configuration
+    setup_backend_config
     
     # Check prerequisites
     check_prerequisites
     
-    # Show creation plan
-    if [[ "$VERBOSE" == true && "$QUIET" == false ]]; then
-        print_info "Proxy configuration plan:"
-        print_info "  Domain: $DOMAIN"
-        print_info "  Production Servers: ${PRODUCTION_SERVERS[*]}"
-        [[ ${#STAGING_SERVERS[@]} -gt 0 ]] && print_info "  Staging Servers: ${STAGING_SERVERS[*]}"
-        [[ ${#CANARY_SERVERS[@]} -gt 0 ]] && print_info "  Canary Servers: ${CANARY_SERVERS[*]}"
-        print_info "  Load Balancing: $LOAD_BALANCING_METHOD"
-        print_info "  A/B Testing: $AB_TEST_ENABLED"
-        [[ "$AB_TEST_ENABLED" == true ]] && print_info "  A/B Split: $AB_SPLIT_PERCENTAGE%"
-        print_info "  Health Checks: $HEALTH_CHECK_ENABLED"
-        print_info "  WebSockets: $ENABLE_WEBSOCKETS"
-        
-        if [[ "$DRY_RUN" == false ]] && ! confirm_action "Proceed with proxy creation?" "Y"; then
-            print_info "Proxy creation cancelled"
-            exit 0
-        fi
+    # Check for existing site
+    check_existing_site
+    
+    # Setup SSL configuration
+    setup_ssl_config
+    
+    # Generate configuration based on mode
+    if [[ "$TEMPLATE_MODE" == "advanced" ]]; then
+        generate_advanced_proxy_config
+    else
+        generate_simple_proxy_config
     fi
     
-    # Create proxy configuration
-    create_proxy_config "$DOMAIN"
+    # Enable site
+    enable_site
     
-    # Enable the site
-    enable_site "$DOMAIN"
+    # Test nginx configuration
+    test_nginx_config
+    
+    # Reload nginx
+    reload_nginx
     
     # Update hosts file
-    update_hosts_file "$DOMAIN"
+    update_hosts_file
     
-    # Show completion summary
-    show_completion_summary
+    # Display summary
+    display_summary
 }
 
 # Run main function
-main "$@"
+main

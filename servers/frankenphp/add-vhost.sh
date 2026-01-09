@@ -19,7 +19,6 @@ source "$PROJECT_ROOT/_helpers/cli.sh"
 readonly FRANKENPHP_SERVICE="frankenphp"
 readonly VHOSTS_DIR="/etc/frankenphp/vhosts"
 readonly WEB_ROOT="/var/www/vhosts"
-readonly DEFAULT_PHP_VERSION="8.3"
 
 # Configuration variables
 DOMAIN=""
@@ -108,6 +107,103 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Function to detect installed PHP versions
+detect_php_versions() {
+    local versions=()
+    
+    # Check for PHP binaries in common locations
+    for php_bin in /usr/bin/php{8.5,8.4,8.3,8.2,8.1,8.0,7.4} /usr/local/bin/php{8.5,8.4,8.3,8.2,8.1}; do
+        if [[ -x "$php_bin" ]]; then
+            local version=$("$php_bin" -r "echo PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;" 2>/dev/null)
+            if [[ -n "$version" ]] && [[ ! " ${versions[@]} " =~ " ${version} " ]]; then
+                versions+=("$version")
+            fi
+        fi
+    done
+    auto-detected if not specified
+    # Also check default php command
+    if command -v php &> /dev/null; then
+        local default_version=$(php -r "echo PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;" 2>/dev/null)
+        if [[ -n "$default_version" ]] && [[ ! " ${versions[@]} " =~ " ${default_version} " ]]; then
+            versions+=("$default_version")
+        fi
+    fi
+    
+    # Sort versions in descending order
+    if [[ ${#versions[@]} -gt 0 ]]; then
+        printf '%s\n' "${versions[@]}" | sort -V -r
+    fi
+}
+
+# Function to get latest installed PHP version
+get_latest_php_version() {
+    local latest=$(detect_php_versions | head -n 1)
+    echo "${latest:-8.3}"
+}
+
+# Function to validate PHP version
+validate_php_version() {
+    local version="$1"
+    local available_versions=($(detect_php_versions))
+    
+    if [[ ${#available_versions[@]} -eq 0 ]]; then
+        print_warning "No PHP installations detected on system"
+        return 0
+    fi
+    
+    for v in "${available_versions[@]}"; do
+        if [[ "$v" == "$version" ]]; then
+            return 0
+        fi
+    done
+    
+    print_error "PHP version $version is not installed on this system"
+    print_info "Available PHP versions: ${available_versions[*]}"
+    return 1
+}
+
+# Function to prompt for PHP version selection
+prompt_php_version() {
+    local available_versions=($(detect_php_versions))
+    
+    if [[ ${#available_versions[@]} -eq 0 ]]; then
+        print_warning "No PHP installations detected, using default: 8.3"
+        echo "8.3"
+        return
+    fi
+    
+    echo
+    print_info "Available PHP versions:"
+    local i=1
+    for version in "${available_versions[@]}"; do
+        local php_bin=""
+        for bin in /usr/bin/php$version /usr/local/bin/php$version; do
+            if [[ -x "$bin" ]]; then
+                php_bin="$bin"
+                break
+            fi
+        done
+        echo "  $i) PHP $version ($php_bin)"
+        ((i++))
+    done
+    echo
+    
+    local default_version="${available_versions[0]}"
+    read -p "Select PHP version [1-${#available_versions[@]}] (default: $default_version): " selection
+    
+    if [[ -z "$selection" ]]; then
+        echo "$default_version"
+        return
+    fi
+    
+    if [[ "$selection" =~ ^[0-9]+$ ]] && [[ $selection -ge 1 ]] && [[ $selection -le ${#available_versions[@]} ]]; then
+        echo "${available_versions[$((selection-1))]}"
+    else
+        print_warning "Invalid selection, using default: $default_version"
+        echo "$default_version"
+    fi
+}
 
 # Function to show help
 show_help() {
@@ -243,14 +339,37 @@ check_prerequisites() {
 
 # Function to setup defaults
 setup_defaults() {
-    # Set default document root
+    # Set default document root with interactive prompt
     if [[ -z "$DOCUMENT_ROOT" ]]; then
-        DOCUMENT_ROOT="$WEB_ROOT/$DOMAIN"
+        local default_root="$WEB_ROOT/$DOMAIN"
+        echo
+        print_info "Project directory configuration"
+        read -p "Enter project directory path (default: $default_root): " input_root
+        
+        if [[ -z "$input_root" ]]; then
+            DOCUMENT_ROOT="$default_root"
+        else
+            # Expand tilde and resolve path
+            DOCUMENT_ROOT="${input_root/#\~/$HOME}"
+        fi
+        print_success "Project directory: $DOCUMENT_ROOT"
     fi
     
     # Set default PHP version
     if [[ -z "$PHP_VERSION" ]]; then
-        PHP_VERSION="$DEFAULT_PHP_VERSION"
+        if [[ "$TEMPLATE_TYPE" == "php" ]]; then
+            # Only prompt for PHP version if creating a PHP vhost
+            PHP_VERSION=$(prompt_php_version)
+            print_success "Selected PHP version: $PHP_VERSION"
+        else
+            PHP_VERSION=$(get_latest_php_version)
+        fi
+    else
+        # Validate provided PHP version
+        if ! validate_php_version "$PHP_VERSION"; then
+            exit 1
+        fi
+        print_success "Using specified PHP version: $PHP_VERSION"
     fi
     
     # Prompt for SSL email if SSL enabled but no email provided
@@ -450,6 +569,7 @@ generate_php_vhost_config() {
 # Virtual Host: $DOMAIN
 # Created: $(date)
 # Type: PHP Application
+# PHP Version: $PHP_VERSION
 # Ports: HTTP=$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", HTTPS=$HTTPS_PORT"; fi)
 
 127.0.0.1:$HTTP_PORT$(if [[ "$ENABLE_SSL" == true ]]; then echo ", 127.0.0.1:$HTTPS_PORT"; fi) {
@@ -757,6 +877,7 @@ Virtual Host Information:
   Domain:          $DOMAIN
   Document Root:   $DOCUMENT_ROOT/public
   Template Type:   $TEMPLATE_TYPE
+  PHP Version:     $PHP_VERSION
   SSL Enabled:     $(if [[ "$ENABLE_SSL" == true ]]; then echo "Yes"; else echo "No"; fi)
   Configuration:   $VHOSTS_DIR/$DOMAIN.conf
 
@@ -805,6 +926,7 @@ main() {
     print_info "Domain: $DOMAIN"
     print_info "Document Root: $DOCUMENT_ROOT"
     print_info "Template Type: $TEMPLATE_TYPE"
+    print_info "PHP Version: $PHP_VERSION"
     print_info "SSL Enabled: $(if [[ "$ENABLE_SSL" == true ]]; then echo "Yes ($SSL_EMAIL)"; else echo "No"; fi)"
     
     if ! confirm_action "Create virtual host with these settings?" "Y"; then
